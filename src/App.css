@@ -28,7 +28,8 @@ button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.48; }
 
 .app-shell {
-  width: min(1180px, calc(100% - 40px));
+  width: calc(100% - 40px);
+  max-width: 1680px;
   margin: 0 auto;
   padding: 34px 0 44px;
 }
@@ -271,7 +272,7 @@ input {
 }
 input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12); }
 
-.table-wrap { overflow: auto; max-height: 390px; }
+.table-wrap { overflow: auto; max-height: clamp(390px, 46vh, 660px); }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th {
   position: sticky;
