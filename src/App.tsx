@@ -87,6 +87,8 @@ function inferredRuntimeLabel(listener: ListenerInfo) {
 }
 
 function App() {
+  const mockParams = isDevMockMode ? new URLSearchParams(window.location.search) : null;
+  const mockScreen = mockParams?.get("screen");
   const [listeners, setListeners] = useState<ListenerInfo[]>([]);
   const [apps, setApps] = useState<ManagedApp[]>([]);
   const [runtimes, setRuntimes] = useState<ManagedRuntime[]>([]);
@@ -94,11 +96,15 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<ManagedApp | null>(null);
+  const [draft, setDraft] = useState<ManagedApp | null>(() => mockScreen === "app-editor" ? {
+    id: "showcase-app",
+    name: "Docs Preview",
+    port: 4200,
+    command: "npm run dev",
+    cwd: "C:\\0.Coding\\docs-preview",
+  } : null);
   const [killTarget, setKillTarget] = useState<ListenerInfo | null>(null);
-  const [bubbleMode, setBubbleMode] = useState(
-    isDevMockMode && new URLSearchParams(window.location.search).get("bubble") === "1",
-  );
+  const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -124,6 +130,11 @@ function App() {
     const timer = window.setInterval(() => void refresh(true), 4000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    if (mockScreen !== "terminate" || killTarget || listeners.length === 0) return;
+    setKillTarget(listeners.find((listener) => listener.port === 5173) ?? listeners[0]);
+  }, [killTarget, listeners, mockScreen]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("bubble-mode", bubbleMode);

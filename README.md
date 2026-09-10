@@ -1,103 +1,120 @@
-# Port Lens
+<div align="center">
+  <img src=".github/assets/app.png" alt="Port Lens logo" width="120">
+  <h1>Port Lens</h1>
+</div>
 
-Port Lens is a lightweight desktop dashboard for local development servers.
-It shows which TCP ports are listening, maps them to processes and PIDs, and lets you register trusted development services for one-click Start / Stop / Restart.
+<p align="center">
+  <em>A lightweight desktop lens for the ports and local development services running on your machine.</em>
+</p>
 
-The primary target is Windows 11. macOS listener discovery is also implemented so the project can be developed and validated from macOS.
+<p align="center">
+  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Tauri-2-blue.svg?logo=tauri&logoColor=white" alt="Built with Tauri 2"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-Stable-orange.svg?logo=rust&logoColor=white" alt="Powered by Rust"></a>
+  <img src="https://img.shields.io/badge/Windows-x64-0078D4.svg?logo=windows&logoColor=white" alt="Windows x64">
+  <img src="https://img.shields.io/badge/macOS-development-000000.svg?logo=apple&logoColor=white" alt="macOS development support">
+</p>
 
-## Why
+<div align="center">
+  <img src=".github/assets/dashboard.png" alt="Port Lens dashboard" width="1000">
+</div>
 
-Local development often leaves several servers running at once. Finding the owner of a busy port usually means jumping between `netstat`, Task Manager, PowerShell, and terminal windows.
+Port Lens answers a simple local-development question: **what is using this port, and is it one of my apps?** It discovers TCP listeners from the operating system, maps them to processes, and gives explicitly registered development services safe Start / Stop / Restart controls.
 
-Port Lens keeps that workflow in one small local application:
+The primary runtime target is **Windows 11**. macOS listener discovery is also implemented for development and validation.
 
-- discover active TCP listening ports
-- show process name, PID, bind address, and protocol
-- search by port, process, PID, or address
-- register trusted development apps with a command, working directory, and preferred port
-- Start / Stop / Restart registered apps
-- open a registered localhost service in the browser
-- detect port conflicts before starting an app
-- explicitly confirm before terminating an unmanaged process
-- stay available from the system tray
+---
 
-## Current scope
+## ✨ Key Features
 
-| Capability | Status |
-| --- | --- |
-| Windows TCP listener discovery | Implemented |
-| macOS TCP listener discovery | Implemented |
-| Process / PID mapping | Implemented |
-| Managed app registry | Implemented |
-| Start / Stop / Restart | Implemented |
-| Port conflict detection | Implemented |
-| Unmanaged process termination | Implemented with confirmation |
-| Tray resident mode | Implemented |
-| Single-instance behavior | Implemented |
-| Light / dark appearance | Follows the OS |
-| UDP listeners | Not in v0.1 |
-| Health checks | Planned |
-| Safe adoption of servers started outside Port Lens | Planned |
-| Windows packaged release | MSI + NSIS bundle pipeline verified; v0.1.0 preview |
+- **Live port discovery** — enumerate active TCP LISTEN endpoints directly from Windows or macOS.
+- **Friendly app identity** — show a registered app name first; otherwise derive a conservative runtime hint from the process command line while retaining the real executable name and PID.
+- **Managed app controls** — register a trusted command, working directory, and preferred port for one-click Start / Stop / Restart.
+- **Conflict visibility** — refuse to start a managed app when another process already owns its port instead of silently killing the blocker.
+- **Safe unmanaged termination** — confirm before terminating an unknown listener and re-check the selected PID + port immediately before the kill.
+- **Compact bubble** — collapse the dashboard into an always-on-top `running apps / listening ports` monitor and restore it with one click.
+- **Native system tray** — reopen the dashboard, show the compact bubble, refresh, or quit without keeping the main window in front.
+- **Responsive dashboard** — use the available desktop width instead of keeping a fixed narrow content column when maximized.
 
-## Safety model
+---
 
-Port Lens deliberately distinguishes a **managed app** from an arbitrary process that happens to own a port.
-A managed app can only be stopped through the managed controls when Port Lens started it during the current application session.
+## Showcase
 
-For unmanaged listeners, Port Lens presents a separate **Kill** action and asks for confirmation before terminating the process tree. It also refuses to terminate protected PIDs such as PID 0, PID 4, and Port Lens itself.
+<table>
+<tr>
+<td width="34%" align="center"><img src=".github/assets/app-editor.png" width="420" alt="Port Lens managed app editor"><br><sub>Managed App — register a trusted command, working directory, and preferred port</sub></td>
+<td width="34%" align="center"><img src=".github/assets/terminate-process.png" width="420" alt="Port Lens process termination confirmation"><br><sub>Terminate — explicit confirmation before stopping an unmanaged listener</sub></td>
+<td width="32%" align="center"><img src=".github/assets/compact-bubble.png" width="300" alt="Port Lens compact bubble"><br><sub>Compact Bubble — running managed apps and total listening ports at a glance</sub></td>
+</tr>
+</table>
 
-When a managed app is started, Port Lens checks the preferred port first. If another process already owns it, the app is not started and the conflict is shown instead of automatically killing the blocker.
+<sub>Showcase images use synthetic mock data rendered by the real Port Lens frontend on macOS. Mock fixtures are local-only and are not part of the packaged application.</sub>
 
-This is intentionally more conservative than aggressively taking over a port.
+---
 
-## Architecture
+## 🚀 Getting Started on Windows
 
-```text
-React / TypeScript UI
-        │
-        │ Tauri commands
-        ▼
-Rust backend
- ├─ ports.rs            listener discovery + normalization
- ├─ process_control.rs  spawn / stop / process checks
- ├─ registry.rs         persisted managed-app configuration
- └─ lib.rs              commands, tray, window lifecycle
-```
+Unsigned Windows x64 preview installers are published through [GitHub Releases](https://github.com/teeeeooo/port-lens/releases). Port Lens currently produces both installer formats on a native `windows-latest` GitHub Actions runner.
 
-### Windows listener discovery
+| Package | Pattern | Description |
+| :--- | :--- | :--- |
+| **NSIS** | `Port.Lens_<version>_x64-setup.exe` | Standard Windows setup executable. |
+| **MSI** | `Port.Lens_<version>_x64_en-US.msi` | Windows Installer package. |
+| **Checksums** | `SHA256SUMS.txt` | SHA-256 hashes for release artifacts. |
 
-Windows uses `Get-NetTCPConnection -State Listen` and `Get-Process`, serialized as JSON by PowerShell. Parsing structured output avoids depending on localized `netstat` state strings.
+### Windows SmartScreen
 
-### macOS listener discovery
+Preview installers are currently **unsigned**. Windows SmartScreen, WDAC/AppLocker, EDR, or organization policy may therefore warn about or block them. Follow the policy of the machine where Port Lens is being installed rather than bypassing managed-device controls.
 
-macOS uses `lsof -nP -iTCP -sTCP:LISTEN -Fpcn` and parses its machine-oriented field output.
+---
 
-## Tech stack
+## App identification
 
-- Tauri 2
-- Rust
-- React 19
-- TypeScript
-- Vite
+Port Lens keeps display names and operating-system identity separate. A listener owned by a running Managed App is shown with the configured app name, such as `Chatbot API`, with `node` retained underneath as the actual process executable.
 
-Tauri was selected instead of Electron to keep the desktop shell and runtime footprint comparatively small while retaining native process and tray integration.
+For unregistered listeners, Port Lens may derive a conservative label from the process command line, for example `ui · Vite`, `uvicorn · app:api`, or `debug-api · server.mjs`. When no useful hint is available, it falls back to the real process name. The inferred label never replaces the PID or underlying executable identity used for process control.
 
-## Development
+---
+
+## 🔒 Safety Model
+
+Port Lens deliberately distinguishes a **Managed App** from an arbitrary process that happens to own a port.
+
+1. A Managed App receives Start / Stop / Restart controls only after the user registers its command, working directory, and preferred port.
+2. Port Lens records the root PID when it starts that app and uses that runtime ownership for managed Stop / Restart.
+3. If the preferred port is already occupied, Port Lens reports the conflict and does not automatically terminate the blocker.
+4. An unmanaged listener has a separate **Kill** action with an explicit confirmation dialog.
+5. Immediately before an unmanaged kill, Port Lens re-enumerates listeners and verifies that the same PID still owns the selected port.
+6. Protected process IDs and listeners assigned to an actively managed app are rejected by the unmanaged termination path.
+
+This is intentionally more conservative than automatically taking ownership of a busy development port.
+
+---
+
+## Compact Bubble & Tray
+
+The dashboard can collapse into a small always-on-top bubble showing `running managed apps / total managed apps` and the current number of listening ports. Expanding restores the previous window size, position, and maximized state.
+
+The native tray provides **Open Port Lens**, **Show compact bubble**, **Refresh now**, and **Quit Port Lens**. Closing the main window hides it to the tray rather than terminating the application; explicit Quit exits the process.
+
+---
+
+## 🛠️ Development
 
 Requirements:
 
-- Node.js
+- Node.js 22+
 - npm
-- Rust toolchain
-- Tauri desktop prerequisites for the host OS
+- Rust stable toolchain
+- Tauri 2 desktop prerequisites for the host operating system
 
 ```bash
-npm install
+git clone https://github.com/teeeeooo/port-lens.git
+cd port-lens
+npm ci
 npm run tauri dev
 ```
 
-Validation:
+Core validation:
 
 ```bash
 npm run build
@@ -106,34 +123,65 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-### Windows preview bundles
+GitHub CI runs the frontend build, rustfmt, Clippy with warnings denied, and Rust tests on both macOS and Windows. A separate Windows Bundle workflow performs a native Tauri release build and uploads NSIS + MSI artifacts.
 
-The `Windows Bundle` GitHub Actions workflow builds both x64 installer formats on a native Windows runner:
+### Local mock screenshots
 
-- NSIS `*-setup.exe`
-- MSI `*.msi`
+Documentation screenshots are rendered from the real frontend with a deliberately isolated development-only fixture path:
 
-Current preview installers are unsigned. Windows SmartScreen may therefore show an unknown-publisher warning until code signing is configured.
+```text
+dev-mock/port-lens.json     # ignored by git
+.local-screenshots/         # ignored by git
+        │
+        └─ Vite dev-only /__port-lens-mock
+                    │
+                    └─ explicit ?mock=1 opt-in
+```
 
-## Design references
+`dev-mock/` is served only when Vite is running in development mode. The frontend will request it only when both `import.meta.env.DEV` and `?mock=1` are true. Normal `tauri dev` without that query and every production build continue to use Tauri IPC and real OS data.
 
-Port Lens is an independent implementation, but its initial product direction was informed by several established or relevant tools:
+The local screenshot states are `?mock=1` for the dashboard, `?mock=1&screen=app-editor`, `?mock=1&screen=terminate`, and `?mock=1&bubble=1`. `scripts/capture-webkit.swift` renders those states to PNG without requiring macOS Screen Recording permission.
 
-- **PortPilot** — unified managed-app and active-port workflow, conflict visibility, tray-oriented local development UX
-- **PortManager** — dense searchable port/process table and explicit confirmation before process termination
-- **Microsoft TCPView / Sysinternals** — straightforward network-endpoint-to-process visibility
-- **System Informer** — clear separation between process inspection and process control
+The committed `.github/assets/*.png` files are rendered documentation outputs only; the synthetic fixture itself is not committed or packaged.
 
-No source code from those projects is copied into Port Lens. The references above are product and interaction patterns only.
+---
 
-## v0.1 principles
+## Architecture
 
-1. Local only — no account, cloud service, or telemetry is required.
-2. Show the OS truth — active listeners come from the operating system rather than a manually maintained list.
-3. Manage only what is explicit — registered apps get Start / Stop / Restart; unknown listeners remain separate.
-4. Prefer a visible conflict over silently killing a process.
-5. Keep the UI dense enough to answer “what is using this port?” immediately.
+```text
+React / TypeScript UI
+        │ Tauri commands + events
+        ▼
+Rust backend
+ ├─ ports.rs            listener discovery + command-line metadata
+ ├─ process_control.rs  spawn / stop / terminate process trees
+ ├─ registry.rs         persisted Managed App configuration
+ ├─ bubble.rs           compact native-window lifecycle
+ └─ lib.rs              commands, tray, events, window lifecycle
+```
 
-## Repository
+### Platform discovery
 
-`https://github.com/teeeeooo/port-lens`
+**Windows** uses `Get-NetTCPConnection -State Listen`, `Get-Process`, and read-only `Win32_Process` command-line metadata. PowerShell serializes structured JSON so listener parsing does not depend on localized `netstat` strings. PowerShell is launched without a visible console window.
+
+**macOS** uses `lsof -nP -iTCP -sTCP:LISTEN -Fpcn` for listener ownership and `ps` for command-line enrichment. macOS support primarily exists to keep development and UI validation possible away from the target Windows machine.
+
+---
+
+## Design References
+
+Port Lens is an independent implementation. Its initial product direction was informed by established or relevant tools rather than copied from them:
+
+- **Microsoft TCPView / Sysinternals** — direct endpoint-to-process visibility.
+- **System Informer** — clear separation between process inspection and process control.
+- **PortPilot** — managed-service plus active-port workflow and local-development ergonomics.
+- **PortManager** — dense searchable port/process presentation and explicit termination confirmation.
+- **Token Lens** — compact Tauri desktop lifecycle patterns, native tray behavior, and the optional floating-bubble interaction model.
+
+No source code from those projects is copied into Port Lens; they are interaction and architecture references.
+
+---
+
+## Current Scope
+
+TCP listeners, Managed Apps, safe process control, friendly app identification, responsive desktop UI, tray residency, and compact bubble mode are implemented. UDP discovery, HTTP health checks, and safe adoption of externally started servers remain future work.
