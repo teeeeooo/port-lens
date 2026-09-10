@@ -8,6 +8,13 @@ const EDGE_MARGIN: i32 = 12;
 const MIN_WIDTH: f64 = 800.0;
 const MIN_HEIGHT: f64 = 580.0;
 
+fn bubble_physical_size(bubble_scale: f64, monitor_scale: f64) -> PhysicalSize<u32> {
+    PhysicalSize::new(
+        (BUBBLE_WIDTH * bubble_scale * monitor_scale).round() as u32,
+        (BUBBLE_HEIGHT * bubble_scale * monitor_scale).round() as u32,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpandedWindow {
     position: PhysicalPosition<i32>,
@@ -71,6 +78,7 @@ fn collapsed_position(
 pub fn collapse(
     window: &WebviewWindow,
     controller: &BubbleController,
+    bubble_scale: f64,
 ) -> Result<BubblePayload, String> {
     let mut state = controller
         .state
@@ -98,12 +106,9 @@ pub fn collapse(
         .current_monitor()
         .map_err(window_error)?
         .ok_or_else(|| "No monitor is available for the compact bubble.".to_string())?;
-    let scale = monitor.scale_factor();
+    let monitor_scale = monitor.scale_factor();
     let work = monitor.work_area();
-    let bubble_size = PhysicalSize::new(
-        (BUBBLE_WIDTH * scale).round() as u32,
-        (BUBBLE_HEIGHT * scale).round() as u32,
-    );
+    let bubble_size = bubble_physical_size(bubble_scale, monitor_scale);
     let desired_y = position.y + (size.height as i32 - bubble_size.height as i32) / 2;
     let target = collapsed_position(
         work.position.x,
@@ -132,6 +137,49 @@ pub fn collapse(
 
     state.collapsed = true;
     Ok(BubblePayload { collapsed: true })
+}
+
+pub fn resize_collapsed(
+    window: &WebviewWindow,
+    controller: &BubbleController,
+    bubble_scale: f64,
+) -> Result<(), String> {
+    let state = controller
+        .state
+        .lock()
+        .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
+    if !state.collapsed {
+        return Ok(());
+    }
+    drop(state);
+
+    let position = window.outer_position().map_err(window_error)?;
+    let size = window.outer_size().map_err(window_error)?;
+    let monitor = window
+        .current_monitor()
+        .map_err(window_error)?
+        .ok_or_else(|| "No monitor is available for the compact bubble.".to_string())?;
+    let work = monitor.work_area();
+    let bubble_size = bubble_physical_size(bubble_scale, monitor.scale_factor());
+    let desired_y = position.y + (size.height as i32 - bubble_size.height as i32) / 2;
+    let target = collapsed_position(
+        work.position.x,
+        work.position.y,
+        work.size.width,
+        work.size.height,
+        bubble_size.width,
+        bubble_size.height,
+        desired_y,
+    );
+    window
+        .set_min_size(Some(bubble_size))
+        .map_err(window_error)?;
+    window
+        .set_max_size(Some(bubble_size))
+        .map_err(window_error)?;
+    window.set_size(bubble_size).map_err(window_error)?;
+    window.set_position(target).map_err(window_error)?;
+    Ok(())
 }
 
 pub fn expand(
@@ -202,5 +250,12 @@ mod tests {
         let position = collapsed_position(-1920, 0, 1920, 1080, 276, 46, 400);
         assert_eq!(position.x, -288);
         assert_eq!(position.y, 400);
+    }
+
+    #[test]
+    fn bubble_size_scales_with_user_setting_and_monitor_dpi() {
+        assert_eq!(bubble_physical_size(0.7, 2.0), PhysicalSize::new(386, 64));
+        assert_eq!(bubble_physical_size(1.0, 1.0), PhysicalSize::new(276, 46));
+        assert_eq!(bubble_physical_size(1.5, 1.0), PhysicalSize::new(414, 69));
     }
 }

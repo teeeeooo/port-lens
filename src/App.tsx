@@ -7,6 +7,7 @@ import {
   expandFromBubble,
   getBubbleState,
   getListeners,
+  getSettings,
   getManagedApps,
   getManagedRuntimes,
   killListenerProcess,
@@ -15,9 +16,12 @@ import {
   saveManagedApp,
   startManagedApp,
   stopManagedApp,
+  updateSettings,
 } from "./api";
 import { isDevMockMode } from "./devMock";
-import type { BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, ManagedStatus } from "./types";
+import SettingsModal from "./SettingsModal";
+import { localizeError, resolveLanguage, t } from "./i18n";
+import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, ManagedStatus } from "./types";
 import "./App.css";
 
 type ManagedRow = ManagedApp & {
@@ -33,6 +37,11 @@ const createDraft = (): ManagedApp => ({
   command: "npm run dev",
   cwd: "",
 });
+
+const DEFAULT_SETTINGS: AppSettings = {
+  language: "system",
+  bubbleScale: 1,
+};
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -104,7 +113,10 @@ function App() {
     cwd: "C:\\0.Coding\\docs-preview",
   } : null);
   const [killTarget, setKillTarget] = useState<ListenerInfo | null>(null);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
+  const uiLanguage = resolveLanguage(settings.language);
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -130,6 +142,17 @@ function App() {
     const timer = window.setInterval(() => void refresh(true), 4000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    void getSettings()
+      .then(setSettings)
+      .catch((settingsError) => setError(messageOf(settingsError)));
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.lang = uiLanguage;
+    document.documentElement.style.setProperty("--bubble-scale", String(settings.bubbleScale));
+  }, [settings.bubbleScale, uiLanguage]);
 
   useEffect(() => {
     if (mockScreen !== "terminate" || killTarget || listeners.length === 0) return;
@@ -209,6 +232,15 @@ function App() {
 
   const runningCount = managedRows.filter((row) => row.status === "running").length;
 
+  const savePreferences = async (patch: Partial<AppSettings>) => {
+    try {
+      const next = await updateSettings(patch);
+      setSettings(next);
+    } catch (settingsError) {
+      setError(messageOf(settingsError));
+    }
+  };
+
   const collapseBubble = async () => {
     try {
       const state = await collapseToBubble();
@@ -256,7 +288,7 @@ function App() {
   };
 
   const deleteApp = async (app: ManagedApp) => {
-    if (!window.confirm(`Remove ${app.name} from Port Lens?`)) return;
+    if (!window.confirm(t(uiLanguage, "removeConfirm", { name: app.name }))) return;
     await perform(`remove:${app.id}`, () => removeManagedApp(app.id));
   };
 
@@ -296,17 +328,20 @@ function App() {
           <div>
             <div className="eyebrow">LOCAL DEVELOPMENT</div>
             <h1>Port Lens</h1>
-            <p>See what is listening, then start or stop the services you actually manage.</p>
+            <p>{t(uiLanguage, "headerDescription")}</p>
           </div>
         </div>
         <div className="topbar-actions">
           <div className="summary-pill">
             <span className="status-dot running" />
-            {runningCount} managed running
+            {runningCount} running
           </div>
           <div className="summary-pill">{listeners.length} listeners</div>
           <button className="secondary-button" onClick={() => void collapseBubble()}>
             Compact
+          </button>
+          <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
+            Settings
           </button>
           <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
             {loading ? "Refreshing…" : "Refresh"}
@@ -316,7 +351,7 @@ function App() {
 
       {error && (
         <div className="error-banner" role="alert">
-          <span>{error}</span>
+          <span>{localizeError(uiLanguage, error)}</span>
           <button onClick={() => setError(null)}>Dismiss</button>
         </div>
       )}
@@ -325,7 +360,7 @@ function App() {
         <div className="section-header">
           <div>
             <h2>Managed apps</h2>
-            <p>Start commands you trust. Port Lens only stops processes it started in this session.</p>
+            <p>{t(uiLanguage, "managedDescription")}</p>
           </div>
           <button className="primary-button" onClick={() => setDraft(createDraft())}>
             Add app
@@ -334,8 +369,8 @@ function App() {
 
         {managedRows.length === 0 ? (
           <button className="empty-state" onClick={() => setDraft(createDraft())}>
-            <strong>No managed apps yet</strong>
-            <span>Add a dev server to get one-click Start / Stop / Restart.</span>
+            <strong>{t(uiLanguage, "emptyTitle")}</strong>
+            <span>{t(uiLanguage, "emptyDescription")}</span>
           </button>
         ) : (
           <div className="managed-grid">
@@ -368,7 +403,7 @@ function App() {
 
                   {app.status === "occupied" && app.listener && (
                     <div className="conflict-note">
-                      Port {app.port} is already held by {app.listener.processName} (PID {app.listener.pid}).
+                      {t(uiLanguage, "conflict", { port: app.port, process: app.listener.processName, pid: app.listener.pid })}
                     </div>
                   )}
 
@@ -405,7 +440,7 @@ function App() {
         <div className="section-header listeners-heading">
           <div>
             <h2>Listening ports</h2>
-            <p>Active TCP listeners discovered directly from the operating system.</p>
+            <p>{t(uiLanguage, "listenersDescription")}</p>
           </div>
           <label className="search-box">
             <span>Search</span>
@@ -521,9 +556,7 @@ function App() {
                 placeholder="C:\\0.Coding\\my-project"
               />
             </label>
-            <p className="form-help">
-              Port Lens will launch this command in the working directory and keep its root PID for safe Stop / Restart.
-            </p>
+            <p className="form-help">{t(uiLanguage, "formHelp")}</p>
             <div className="modal-actions">
               <button type="button" onClick={() => setDraft(null)}>Cancel</button>
               <button className="primary-button" type="submit" disabled={busy === `save:${draft.id}`}>
@@ -534,12 +567,21 @@ function App() {
         </div>
       )}
 
+      {settingsOpen && (
+        <SettingsModal
+          settings={settings}
+          language={uiLanguage}
+          onChange={savePreferences}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
       {killTarget && (
         <div className="modal-backdrop" onMouseDown={() => setKillTarget(null)}>
           <div className="modal-card confirm-card" onMouseDown={(event) => event.stopPropagation()}>
             <div className="warning-mark">!</div>
-            <h2>Terminate process?</h2>
-            <p>This will terminate the selected process tree. Unsaved work in that process can be lost.</p>
+            <h2>{t(uiLanguage, "terminateTitle")}</h2>
+            <p>{t(uiLanguage, "terminateWarning")}</p>
             <dl className="confirm-details">
               <div><dt>Process</dt><dd>{killTarget.processName}</dd></div>
               <div><dt>PID</dt><dd>{killTarget.pid}</dd></div>

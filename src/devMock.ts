@@ -1,4 +1,4 @@
-import type { ListenerInfo, ManagedApp, ManagedRuntime } from "./types";
+import type { AppSettings, ListenerInfo, ManagedApp, ManagedRuntime, SettingsPatch } from "./types";
 
 interface MockSnapshot {
   listeners: ListenerInfo[];
@@ -83,4 +83,19 @@ export async function mockRestartApp(appId: string) {
 export async function mockKillListener(pid: number, port: number) {
   const state = await loadState();
   state.listeners = state.listeners.filter((listener) => !(listener.pid === pid && listener.port === port));
+}
+
+let mockSettings: AppSettings = {
+  language: new URLSearchParams(window.location.search).get("lang") === "ko" ? "ko" : "en",
+  bubbleScale: Number(new URLSearchParams(window.location.search).get("bubbleScale") ?? "1") || 1,
+};
+
+export async function mockGetSettings() {
+  return clone(mockSettings);
+}
+
+export async function mockUpdateSettings(patch: SettingsPatch) {
+  mockSettings = { ...mockSettings, ...patch };
+  mockSettings.bubbleScale = Math.round(Math.max(0.7, Math.min(1.5, mockSettings.bubbleScale)) * 10) / 10;
+  return clone(mockSettings);
 }

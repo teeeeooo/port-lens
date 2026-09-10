@@ -3,10 +3,12 @@ mod models;
 mod ports;
 mod process_control;
 mod registry;
+mod settings;
 
 use models::{ListenerInfo, ManagedApp, ManagedRuntime};
 use process_control::{is_process_alive, spawn_managed, terminate_tree};
 use registry::AppState;
+use settings::{AppSettings, SettingsPatch, SettingsStore};
 use std::thread;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
@@ -238,6 +240,23 @@ fn kill_listener_process(pid: u32, port: u16, state: State<'_, AppState>) -> Res
     terminate_tree(pid)
 }
 
+#[tauri::command]
+fn get_settings(store: State<'_, SettingsStore>) -> Result<AppSettings, String> {
+    store.get()
+}
+
+#[tauri::command]
+fn update_settings(
+    patch: SettingsPatch,
+    window: WebviewWindow,
+    store: State<'_, SettingsStore>,
+    controller: State<'_, bubble::BubbleController>,
+) -> Result<AppSettings, String> {
+    let settings = store.update(patch)?;
+    bubble::resize_collapsed(&window, &controller, settings.bubble_scale)?;
+    Ok(settings)
+}
+
 fn emit_bubble_state(window: &WebviewWindow, payload: bubble::BubblePayload) {
     let _ = window.emit(BUBBLE_EVENT, payload);
 }
@@ -253,8 +272,10 @@ fn get_bubble_state(
 fn collapse_to_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
+    settings: State<'_, SettingsStore>,
 ) -> Result<bubble::BubblePayload, String> {
-    let payload = bubble::collapse(&window, &controller)?;
+    let bubble_scale = settings.get()?.bubble_scale;
+    let payload = bubble::collapse(&window, &controller, bubble_scale)?;
     emit_bubble_state(&window, payload);
     Ok(payload)
 }
@@ -286,12 +307,12 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let config_path = app
+            let config_dir = app
                 .path()
                 .app_config_dir()
-                .map_err(|error| format!("Failed to resolve config directory: {error}"))?
-                .join("managed-apps.json");
-            app.manage(AppState::load(config_path));
+                .map_err(|error| format!("Failed to resolve config directory: {error}"))?;
+            app.manage(AppState::load(config_dir.join("managed-apps.json")));
+            app.manage(SettingsStore::load(config_dir)?);
             app.manage(bubble::BubbleController::default());
 
             let show_item = MenuItem::with_id(app, "show", "Open Port Lens", true, None::<&str>)?;
@@ -311,8 +332,13 @@ pub fn run() {
                     "bubble" => {
                         if let Some(window) = app.get_webview_window("main") {
                             let controller = app.state::<bubble::BubbleController>();
-                            if let Ok(payload) = bubble::collapse(&window, &controller) {
-                                emit_bubble_state(&window, payload);
+                            let settings = app.state::<SettingsStore>();
+                            if let Ok(current) = settings.get() {
+                                if let Ok(payload) =
+                                    bubble::collapse(&window, &controller, current.bubble_scale)
+                                {
+                                    emit_bubble_state(&window, payload);
+                                }
                             }
                         }
                     }
@@ -369,6 +395,8 @@ pub fn run() {
             stop_managed_app,
             restart_managed_app,
             kill_listener_process,
+            get_settings,
+            update_settings,
             get_bubble_state,
             collapse_to_bubble,
             expand_from_bubble

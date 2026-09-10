@@ -4,14 +4,16 @@ import {
   mockGetApps,
   mockGetListeners,
   mockGetRuntimes,
+  mockGetSettings,
   mockKillListener,
   mockRemoveApp,
   mockRestartApp,
   mockSaveApp,
   mockStartApp,
   mockStopApp,
+  mockUpdateSettings,
 } from "./devMock";
-import type { BubbleState, ListenerInfo, ManagedApp, ManagedRuntime } from "./types";
+import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, SettingsPatch } from "./types";
 
 export const getListeners = () =>
   isDevMockMode ? mockGetListeners() : invoke<ListenerInfo[]>("get_listeners");
@@ -41,6 +43,12 @@ export const killListenerProcess = (pid: number, port: number) =>
   isDevMockMode
     ? mockKillListener(pid, port)
     : invoke<void>("kill_listener_process", { pid, port });
+
+export const getSettings = () =>
+  isDevMockMode ? mockGetSettings() : invoke<AppSettings>("get_settings");
+
+export const updateSettings = (patch: SettingsPatch) =>
+  isDevMockMode ? mockUpdateSettings(patch) : invoke<AppSettings>("update_settings", { patch });
 
 const mockBubbleState = (): BubbleState => ({
   collapsed: new URLSearchParams(window.location.search).get("bubble") === "1",

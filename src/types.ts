@@ -24,4 +24,14 @@ export interface BubbleState {
   collapsed: boolean;
 }
 
+export interface AppSettings {
+  language: "system" | "en" | "ko";
+  bubbleScale: number;
+}
+
+export interface SettingsPatch {
+  language?: AppSettings["language"];
+  bubbleScale?: number;
+}
+
 export type ManagedStatus = "running" | "occupied" | "stopped";
