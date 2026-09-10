@@ -133,10 +133,13 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <div className="eyebrow">LOCAL DEVELOPMENT</div>
-          <h1>Port Lens</h1>
-          <p>See what is listening, then start or stop the services you actually manage.</p>
+        <div className="brand-lockup">
+          <img className="brand-mark" src="/port-lens.svg" alt="" aria-hidden="true" />
+          <div>
+            <div className="eyebrow">LOCAL DEVELOPMENT</div>
+            <h1>Port Lens</h1>
+            <p>See what is listening, then start or stop the services you actually manage.</p>
+          </div>
         </div>
         <div className="topbar-actions">
           <div className="summary-pill">

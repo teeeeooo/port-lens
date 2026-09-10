@@ -41,6 +41,21 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
   margin-bottom: 22px;
 }
 
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brand-mark {
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
+  flex: 0 0 auto;
+  box-shadow: 0 5px 14px rgba(17, 24, 39, 0.18);
+}
+
 .eyebrow {
   font-size: 11px;
   font-weight: 750;
