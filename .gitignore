@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Local-only UI fixtures and screenshot scratch data
+dev-mock/
+.local-screenshots/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

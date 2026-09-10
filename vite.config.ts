@@ -1,18 +1,37 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-// @ts-expect-error type error without @types/node package
+import { readFile } from "node:fs/promises";
 import process from "node:process";
+import { defineConfig, type Plugin } from "vite";
+import react from "@vitejs/plugin-react";
+
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vite.dev/config/
-export default defineConfig(() => ({
-  plugins: [react()],
+function devMockPlugin(): Plugin {
+  return {
+    name: "port-lens-dev-mock",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use("/__port-lens-mock", async (_request, response) => {
+        try {
+          const fixture = await readFile(
+            new URL("./dev-mock/port-lens.json", import.meta.url),
+            "utf8",
+          );
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(fixture);
+        } catch {
+          response.statusCode = 404;
+          response.end("Port Lens dev mock fixture is unavailable");
+        }
+      });
+    },
+  };
+}
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
+export default defineConfig(() => ({
+  plugins: [react(), devMockPlugin()],
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
@@ -25,8 +44,7 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/dev-mock/**"],
     },
   },
 }));
