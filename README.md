@@ -4,6 +4,10 @@
 </div>
 
 <p align="center">
+  <strong>English</strong> · <a href="README.ko.md">한국어</a>
+</p>
+
+<p align="center">
   <em>A lightweight desktop lens for the ports and local development services running on your machine.</em>
 </p>
 
@@ -31,8 +35,10 @@ The primary runtime target is **Windows 11**. macOS listener discovery is also i
 - **Managed app controls** — register a trusted command, working directory, and preferred port for one-click Start / Stop / Restart.
 - **Conflict visibility** — refuse to start a managed app when another process already owns its port instead of silently killing the blocker.
 - **Safe unmanaged termination** — confirm before terminating an unknown listener and re-check the selected PID + port immediately before the kill.
-- **Compact bubble** — collapse the dashboard into an always-on-top `running apps / listening ports` monitor and restore it with one click.
+- **Compact bubble** — collapse the dashboard into an always-on-top `running apps / listening ports` monitor, resize it from 70% to 150%, and restore it with one click.
+- **Language preference** — follow the system language or explicitly choose English / 한국어 while keeping technical control labels in English.
 - **Native system tray** — reopen the dashboard, show the compact bubble, refresh, or quit without keeping the main window in front.
+- **Portable Windows build** — run the same GUI from a single unsigned EXE without installation.
 - **Responsive dashboard** — use the available desktop width instead of keeping a fixed narrow content column when maximized.
 
 ---
@@ -45,6 +51,9 @@ The primary runtime target is **Windows 11**. macOS listener discovery is also i
 <td width="34%" align="center"><img src=".github/assets/terminate-process.png" width="420" alt="Port Lens process termination confirmation"><br><sub>Terminate — explicit confirmation before stopping an unmanaged listener</sub></td>
 <td width="32%" align="center"><img src=".github/assets/compact-bubble.png" width="300" alt="Port Lens compact bubble"><br><sub>Compact Bubble — running managed apps and total listening ports at a glance</sub></td>
 </tr>
+<tr>
+<td colspan="3" align="center"><img src=".github/assets/settings.png" width="620" alt="Port Lens settings"><br><sub>Settings — System / English / 한국어 and persistent 70%–150% bubble sizing</sub></td>
+</tr>
 </table>
 
 <sub>Showcase images use synthetic mock data rendered by the real Port Lens frontend on macOS. Mock fixtures are local-only and are not part of the packaged application.</sub>
@@ -53,17 +62,18 @@ The primary runtime target is **Windows 11**. macOS listener discovery is also i
 
 ## 🚀 Getting Started on Windows
 
-Unsigned Windows x64 preview installers are published through [GitHub Releases](https://github.com/teeeeooo/port-lens/releases). Port Lens currently produces both installer formats on a native `windows-latest` GitHub Actions runner.
+Unsigned Windows x64 preview builds are published through [GitHub Releases](https://github.com/teeeeooo/port-lens/releases). Port Lens produces NSIS, MSI, and a single-EXE portable build on a native `windows-latest` GitHub Actions runner.
 
 | Package | Pattern | Description |
 | :--- | :--- | :--- |
 | **NSIS** | `Port.Lens_<version>_x64-setup.exe` | Standard Windows setup executable. |
 | **MSI** | `Port.Lens_<version>_x64_en-US.msi` | Windows Installer package. |
+| **Portable** | `Port.Lens_<version>_x64-portable.exe` | Single executable; no installation required. Settings still persist in the normal per-user app config directory. |
 | **Checksums** | `SHA256SUMS.txt` | SHA-256 hashes for release artifacts. |
 
 ### Windows SmartScreen
 
-Preview installers are currently **unsigned**. Windows SmartScreen, WDAC/AppLocker, EDR, or organization policy may therefore warn about or block them. Follow the policy of the machine where Port Lens is being installed rather than bypassing managed-device controls.
+Preview installers and the portable executable are currently **unsigned**. Windows SmartScreen, WDAC/AppLocker, EDR, or organization policy may therefore warn about or block them. Follow the policy of the machine where Port Lens is being installed rather than bypassing managed-device controls.
 
 ---
 
@@ -92,7 +102,7 @@ This is intentionally more conservative than automatically taking ownership of a
 
 ## Compact Bubble & Tray
 
-The dashboard can collapse into a small always-on-top bubble showing `running managed apps / total managed apps` and the current number of listening ports. Expanding restores the previous window size, position, and maximized state.
+The dashboard can collapse into a small always-on-top bubble showing `running managed apps / total managed apps` and the current number of listening ports. Bubble size is configurable from **70% to 150% in 10% steps** and is persisted with the language preference. Expanding restores the previous window size, position, and maximized state.
 
 The native tray provides **Open Port Lens**, **Show compact bubble**, **Refresh now**, and **Quit Port Lens**. Closing the main window hides it to the tray rather than terminating the application; explicit Quit exits the process.
 
@@ -123,7 +133,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-GitHub CI runs the frontend build, rustfmt, Clippy with warnings denied, and Rust tests on both macOS and Windows. A separate Windows Bundle workflow performs a native Tauri release build and uploads NSIS + MSI artifacts.
+GitHub CI runs the frontend build, rustfmt, Clippy with warnings denied, and Rust tests on both macOS and Windows. A separate Windows Bundle workflow performs a native Tauri release build and uploads NSIS, MSI, and the single-EXE portable artifact.
 
 ### Local mock screenshots
 
@@ -140,7 +150,7 @@ dev-mock/port-lens.json     # ignored by git
 
 `dev-mock/` is served only when Vite is running in development mode. The frontend will request it only when both `import.meta.env.DEV` and `?mock=1` are true. Normal `tauri dev` without that query and every production build continue to use Tauri IPC and real OS data.
 
-The local screenshot states are `?mock=1` for the dashboard, `?mock=1&screen=app-editor`, `?mock=1&screen=terminate`, and `?mock=1&bubble=1`. `scripts/capture-webkit.swift` renders those states to PNG without requiring macOS Screen Recording permission.
+The local screenshot states include `?mock=1` for the dashboard, `?mock=1&screen=app-editor`, `?mock=1&screen=terminate`, `?mock=1&screen=settings&lang=ko`, and `?mock=1&bubble=1&bubbleScale=1.5`. `scripts/capture-webkit.swift` renders those states to PNG without requiring macOS Screen Recording permission.
 
 The committed `.github/assets/*.png` files are rendered documentation outputs only; the synthetic fixture itself is not committed or packaged.
 
@@ -156,6 +166,7 @@ Rust backend
  ├─ ports.rs            listener discovery + command-line metadata
  ├─ process_control.rs  spawn / stop / terminate process trees
  ├─ registry.rs         persisted Managed App configuration
+ ├─ settings.rs         language + bubble-size preferences
  ├─ bubble.rs           compact native-window lifecycle
  └─ lib.rs              commands, tray, events, window lifecycle
 ```
@@ -184,4 +195,4 @@ No source code from those projects is copied into Port Lens; they are interactio
 
 ## Current Scope
 
-TCP listeners, Managed Apps, safe process control, friendly app identification, responsive desktop UI, tray residency, and compact bubble mode are implemented. UDP discovery, HTTP health checks, and safe adoption of externally started servers remain future work.
+TCP listeners, Managed Apps, safe process control, friendly app identification, responsive desktop UI, tray residency, configurable compact bubble mode, English/Korean interface preferences, and Windows installer/portable packaging are implemented. UDP discovery, HTTP health checks, and safe adoption of externally started servers remain future work.
