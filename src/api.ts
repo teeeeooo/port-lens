@@ -11,7 +11,7 @@ import {
   mockStartApp,
   mockStopApp,
 } from "./devMock";
-import type { ListenerInfo, ManagedApp, ManagedRuntime } from "./types";
+import type { BubbleState, ListenerInfo, ManagedApp, ManagedRuntime } from "./types";
 
 export const getListeners = () =>
   isDevMockMode ? mockGetListeners() : invoke<ListenerInfo[]>("get_listeners");
@@ -41,3 +41,20 @@ export const killListenerProcess = (pid: number, port: number) =>
   isDevMockMode
     ? mockKillListener(pid, port)
     : invoke<void>("kill_listener_process", { pid, port });
+
+const mockBubbleState = (): BubbleState => ({
+  collapsed: new URLSearchParams(window.location.search).get("bubble") === "1",
+});
+
+export const getBubbleState = () =>
+  isDevMockMode ? Promise.resolve(mockBubbleState()) : invoke<BubbleState>("get_bubble_state");
+
+export const collapseToBubble = () =>
+  isDevMockMode
+    ? Promise.resolve<BubbleState>({ collapsed: true })
+    : invoke<BubbleState>("collapse_to_bubble");
+
+export const expandFromBubble = () =>
+  isDevMockMode
+    ? Promise.resolve<BubbleState>({ collapsed: false })
+    : invoke<BubbleState>("expand_from_bubble");

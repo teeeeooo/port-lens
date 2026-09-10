@@ -1,3 +1,4 @@
+mod bubble;
 mod models;
 mod ports;
 mod process_control;
@@ -10,7 +11,10 @@ use std::thread;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, State, WindowEvent};
+use tauri::{Emitter, Manager, State, WebviewWindow, WindowEvent};
+
+const BUBBLE_EVENT: &str = "port-lens://bubble-state";
+const REFRESH_EVENT: &str = "port-lens://refresh";
 
 #[tauri::command]
 fn get_listeners() -> Result<Vec<ListenerInfo>, String> {
@@ -234,11 +238,43 @@ fn kill_listener_process(pid: u32, port: u16, state: State<'_, AppState>) -> Res
     terminate_tree(pid)
 }
 
+fn emit_bubble_state(window: &WebviewWindow, payload: bubble::BubblePayload) {
+    let _ = window.emit(BUBBLE_EVENT, payload);
+}
+
+#[tauri::command]
+fn get_bubble_state(
+    controller: State<'_, bubble::BubbleController>,
+) -> Result<bubble::BubblePayload, String> {
+    bubble::current(&controller)
+}
+
+#[tauri::command]
+fn collapse_to_bubble(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+) -> Result<bubble::BubblePayload, String> {
+    let payload = bubble::collapse(&window, &controller)?;
+    emit_bubble_state(&window, payload);
+    Ok(payload)
+}
+
+#[tauri::command]
+fn expand_from_bubble(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+) -> Result<bubble::BubblePayload, String> {
+    let payload = bubble::expand(&window, &controller, true)?;
+    emit_bubble_state(&window, payload);
+    Ok(payload)
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        let controller = app.state::<bubble::BubbleController>();
+        if let Ok(payload) = bubble::expand(&window, &controller, true) {
+            emit_bubble_state(&window, payload);
+        }
     }
 }
 
@@ -256,10 +292,16 @@ pub fn run() {
                 .map_err(|error| format!("Failed to resolve config directory: {error}"))?
                 .join("managed-apps.json");
             app.manage(AppState::load(config_path));
+            app.manage(bubble::BubbleController::default());
 
             let show_item = MenuItem::with_id(app, "show", "Open Port Lens", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let bubble_item =
+                MenuItem::with_id(app, "bubble", "Show compact bubble", true, None::<&str>)?;
+            let refresh_item =
+                MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Port Lens", true, None::<&str>)?;
+            let menu =
+                Menu::with_items(app, &[&show_item, &bubble_item, &refresh_item, &quit_item])?;
             let icon = app
                 .default_window_icon()
                 .cloned()
@@ -272,6 +314,17 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    "bubble" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let controller = app.state::<bubble::BubbleController>();
+                            if let Ok(payload) = bubble::collapse(&window, &controller) {
+                                emit_bubble_state(&window, payload);
+                            }
+                        }
+                    }
+                    "refresh" => {
+                        let _ = app.emit_to("main", REFRESH_EVENT, ());
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -305,7 +358,10 @@ pub fn run() {
             start_managed_app,
             stop_managed_app,
             restart_managed_app,
-            kill_listener_process
+            kill_listener_process,
+            get_bubble_state,
+            collapse_to_bubble,
+            expand_from_bubble
         ])
         .run(tauri::generate_context!())
         .expect("error while running Port Lens");

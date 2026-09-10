@@ -1,6 +1,11 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  collapseToBubble,
+  expandFromBubble,
+  getBubbleState,
   getListeners,
   getManagedApps,
   getManagedRuntimes,
@@ -11,7 +16,8 @@ import {
   startManagedApp,
   stopManagedApp,
 } from "./api";
-import type { ListenerInfo, ManagedApp, ManagedRuntime, ManagedStatus } from "./types";
+import { isDevMockMode } from "./devMock";
+import type { BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, ManagedStatus } from "./types";
 import "./App.css";
 
 type ManagedRow = ManagedApp & {
@@ -42,6 +48,9 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<ManagedApp | null>(null);
   const [killTarget, setKillTarget] = useState<ListenerInfo | null>(null);
+  const [bubbleMode, setBubbleMode] = useState(
+    isDevMockMode && new URLSearchParams(window.location.search).get("bubble") === "1",
+  );
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -66,6 +75,32 @@ function App() {
     void refresh();
     const timer = window.setInterval(() => void refresh(true), 4000);
     return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("bubble-mode", bubbleMode);
+    return () => document.documentElement.classList.remove("bubble-mode");
+  }, [bubbleMode]);
+
+  useEffect(() => {
+    if (isDevMockMode) return;
+    let active = true;
+    const cleanups: Array<() => void> = [];
+
+    void getBubbleState()
+      .then((state) => active && setBubbleMode(state.collapsed))
+      .catch((stateError) => active && setError(messageOf(stateError)));
+
+    void listen<BubbleState>("port-lens://bubble-state", (event) => {
+      if (active) setBubbleMode(event.payload.collapsed);
+    }).then((unlisten) => cleanups.push(unlisten));
+
+    void listen("port-lens://refresh", () => void refresh(true)).then((unlisten) => cleanups.push(unlisten));
+
+    return () => {
+      active = false;
+      cleanups.forEach((cleanup) => cleanup());
+    };
   }, [refresh]);
 
   const managedRows = useMemo<ManagedRow[]>(() => {
@@ -95,6 +130,30 @@ function App() {
   }, [listeners, query]);
 
   const runningCount = managedRows.filter((row) => row.status === "running").length;
+
+  const collapseBubble = async () => {
+    try {
+      const state = await collapseToBubble();
+      setBubbleMode(state.collapsed);
+    } catch (bubbleError) {
+      setError(messageOf(bubbleError));
+    }
+  };
+
+  const expandBubble = async () => {
+    try {
+      const state = await expandFromBubble();
+      setBubbleMode(state.collapsed);
+    } catch (bubbleError) {
+      setError(messageOf(bubbleError));
+    }
+  };
+
+  const dragBubble = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || isDevMockMode) return;
+    event.preventDefault();
+    void getCurrentWindow().startDragging();
+  };
 
   const perform = async (key: string, action: () => Promise<unknown>) => {
     setBusy(key);
@@ -130,6 +189,27 @@ function App() {
     await perform(`kill:${target.pid}`, () => killListenerProcess(target.pid, target.port));
   };
 
+  if (bubbleMode) {
+    return (
+      <main className="bubble-shell" aria-label="Port Lens compact monitor">
+        <button className="bubble-grip" onPointerDown={dragBubble} aria-label="Drag Port Lens" title="Drag">
+          <img src="/port-lens.svg" alt="" aria-hidden="true" />
+        </button>
+        <button className="bubble-summary" onClick={() => void expandBubble()} title="Open Port Lens">
+          <span className={`status-dot ${runningCount > 0 ? "running" : "stopped"}`} />
+          <strong>{runningCount}/{apps.length}</strong>
+          <span>apps</span>
+          <span className="bubble-divider" />
+          <strong>{listeners.length}</strong>
+          <span>ports</span>
+        </button>
+        <button className="bubble-expand" onClick={() => void expandBubble()} aria-label="Expand Port Lens" title="Expand">
+          Open
+        </button>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -147,6 +227,9 @@ function App() {
             {runningCount} managed running
           </div>
           <div className="summary-pill">{listeners.length} listeners</div>
+          <button className="secondary-button" onClick={() => void collapseBubble()}>
+            Compact
+          </button>
           <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
             {loading ? "Refreshing…" : "Refresh"}
           </button>

@@ -19,4 +19,8 @@ export interface ManagedRuntime {
   rootPid: number;
 }
 
+export interface BubbleState {
+  collapsed: boolean;
+}
+
 export type ManagedStatus = "running" | "occupied" | "stopped";
