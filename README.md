@@ -38,7 +38,7 @@ Port Lens keeps that workflow in one small local application:
 | UDP listeners | Not in v0.1 |
 | Health checks | Planned |
 | Safe adoption of servers started outside Port Lens | Planned |
-| Windows packaged release | Not yet published |
+| Windows packaged release | MSI + NSIS bundle pipeline verified; v0.1.0 preview |
 
 ## Safety model
 
@@ -105,6 +105,15 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+### Windows preview bundles
+
+The `Windows Bundle` GitHub Actions workflow builds both x64 installer formats on a native Windows runner:
+
+- NSIS `*-setup.exe`
+- MSI `*.msi`
+
+Current preview installers are unsigned. Windows SmartScreen may therefore show an unknown-publisher warning until code signing is configured.
 
 ## Design references
 
