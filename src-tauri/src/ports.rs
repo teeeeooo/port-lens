@@ -1,4 +1,6 @@
 use crate::models::ListenerInfo;
+#[cfg(any(target_os = "macos", test))]
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::process::Command;
 
@@ -25,18 +27,26 @@ pub fn list_listeners() -> Result<Vec<ListenerInfo>, String> {
 fn list_windows_listeners() -> Result<Vec<ListenerInfo>, String> {
     let script = r#"
 $connections = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
-$names = @{}
+$processes = @{}
 foreach ($processId in @($connections | Select-Object -ExpandProperty OwningProcess -Unique)) {
-  try { $names[[uint32]$processId] = (Get-Process -Id $processId -ErrorAction Stop).ProcessName }
-  catch { $names[[uint32]$processId] = 'Unknown' }
+  $name = 'Unknown'
+  $commandLine = $null
+  try { $name = (Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch {}
+  try {
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
+    if ($null -ne $cim -and $null -ne $cim.CommandLine) { $commandLine = [string]$cim.CommandLine }
+  } catch {}
+  $processes[[uint32]$processId] = @{ name = $name; commandLine = $commandLine }
 }
 $items = @($connections | ForEach-Object {
+  $process = $processes[[uint32]$_.OwningProcess]
   [pscustomobject]@{
     protocol = 'TCP'
     localAddress = $_.LocalAddress
     port = [uint16]$_.LocalPort
     pid = [uint32]$_.OwningProcess
-    processName = $names[[uint32]$_.OwningProcess]
+    processName = $process.name
+    commandLine = $process.commandLine
   }
 })
 ConvertTo-Json -InputObject $items -Compress
@@ -77,7 +87,59 @@ fn list_macos_listeners() -> Result<Vec<ListenerInfo>, String> {
     if !output.status.success() && output.stdout.is_empty() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    Ok(parse_lsof(&String::from_utf8_lossy(&output.stdout)))
+    let mut listeners = parse_lsof(&String::from_utf8_lossy(&output.stdout));
+    enrich_macos_command_lines(&mut listeners);
+    Ok(listeners)
+}
+
+#[cfg(target_os = "macos")]
+fn enrich_macos_command_lines(listeners: &mut [ListenerInfo]) {
+    let mut pids = listeners.iter().map(|item| item.pid).collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids.dedup();
+    if pids.is_empty() {
+        return;
+    }
+
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let Ok(output) = Command::new("ps")
+        .args(["-ww", "-p", &pid_list, "-o", "pid=,command="])
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+
+    let commands = parse_ps_command_lines(&String::from_utf8_lossy(&output.stdout));
+    for listener in listeners {
+        listener.command_line = commands.get(&listener.pid).cloned();
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_ps_command_lines(input: &str) -> HashMap<u32, String> {
+    let mut commands = HashMap::new();
+    for line in input.lines() {
+        let trimmed = line.trim_start();
+        let Some(split_at) = trimmed.find(char::is_whitespace) else {
+            continue;
+        };
+        let (pid_text, command_text) = trimmed.split_at(split_at);
+        let Ok(pid) = pid_text.parse::<u32>() else {
+            continue;
+        };
+        let command = command_text.trim();
+        if !command.is_empty() {
+            commands.insert(pid, command.to_string());
+        }
+    }
+    commands
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -103,6 +165,7 @@ fn parse_lsof(input: &str) -> Vec<ListenerInfo> {
                             port,
                             pid,
                             process_name: process_name.clone(),
+                            command_line: None,
                         });
                     }
                 }
@@ -148,5 +211,19 @@ mod tests {
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].port, 3000);
         assert_eq!(result[2].process_name, "python3");
+    }
+
+    #[test]
+    fn parses_ps_command_lines() {
+        let text = "  42 node /Users/test/project/server.js --port 3000\n   9 python3 -m uvicorn app:api\n";
+        let result = parse_ps_command_lines(text);
+        assert_eq!(
+            result.get(&42).map(String::as_str),
+            Some("node /Users/test/project/server.js --port 3000")
+        );
+        assert_eq!(
+            result.get(&9).map(String::as_str),
+            Some("python3 -m uvicorn app:api")
+        );
     }
 }

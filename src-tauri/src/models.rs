@@ -8,6 +8,8 @@ pub struct ListenerInfo {
     pub port: u16,
     pub pid: u32,
     pub process_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_line: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

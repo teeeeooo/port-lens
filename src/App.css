@@ -356,7 +356,9 @@ tbody tr:hover { background: var(--panel-soft); }
 }
 .port-chip { padding: 4px 7px; background: rgba(47, 111, 237, 0.09); color: var(--accent); }
 .protocol-chip { padding: 3px 6px; background: var(--panel-soft); color: var(--muted); font-size: 10px; }
-.process-cell { font-weight: 650; }
+.process-cell { min-width: 150px; }
+.process-primary { display: block; font-weight: 700; }
+.process-secondary { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; font-weight: 550; }
 .mono-cell { font-family: "SFMono-Regular", Consolas, monospace; }
 .muted-cell { color: var(--muted); }
 .action-column { text-align: right; }

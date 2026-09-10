@@ -38,6 +38,54 @@ function messageOf(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function pathParts(path: string) {
+  return path.split(/[\\/]/).filter(Boolean);
+}
+
+function baseName(path: string) {
+  const parts = pathParts(path);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
+function projectFromCommand(command: string) {
+  const match = command.match(/["']?([^"'\s]+)[\\/]node_modules[\\/]/i);
+  return match ? baseName(match[1]) : undefined;
+}
+
+function scriptLabel(path: string) {
+  const parts = pathParts(path);
+  const file = parts[parts.length - 1] ?? path;
+  const parent = parts[parts.length - 2];
+  const genericParents = new Set(["bin", "dist", "src", "scripts", "lib"]);
+  return parent && !genericParents.has(parent.toLowerCase()) ? `${parent} · ${file}` : file;
+}
+
+function inferredRuntimeLabel(listener: ListenerInfo) {
+  const command = listener.commandLine?.trim();
+  if (!command) return undefined;
+  const lower = command.toLowerCase();
+  const project = projectFromCommand(command);
+
+  if (/(^|[\\/\s])next(?:\.cmd)?(?:\s|$)|next[\\/]dist[\\/]bin[\\/]next/.test(lower)) {
+    return project ? `${project} · Next.js` : "Next.js";
+  }
+  if (/(^|[\\/\s])vite(?:\.cmd)?(?:\s|$)|[\\/]vite[\\/]bin[\\/]vite/.test(lower)) {
+    return project ? `${project} · Vite` : "Vite dev server";
+  }
+  if (/(^|[\\/\s])nuxt(?:\.cmd)?(?:\s|$)/.test(lower)) return "Nuxt";
+  if (/(^|[\\/\s])astro(?:\.cmd)?(?:\s|$)/.test(lower)) return "Astro";
+
+  const uvicorn = command.match(/\b(uvicorn|hypercorn)\b\s+([^\s]+)/i);
+  if (uvicorn) return `${uvicorn[1]} · ${uvicorn[2]}`;
+
+  const jar = command.match(/\s-jar\s+["']?([^"'\s]+)["']?/i);
+  if (jar) return baseName(jar[1]);
+
+  const script = command.match(/["']?([^"'\s]+\.(?:mjs|cjs|js|ts|py))["']?(?:\s|$)/i);
+  if (script) return scriptLabel(script[1]);
+  return undefined;
+}
+
 function App() {
   const [listeners, setListeners] = useState<ListenerInfo[]>([]);
   const [apps, setApps] = useState<ManagedApp[]>([]);
@@ -118,16 +166,35 @@ function App() {
     });
   }, [apps, listeners, runtimes]);
 
+  const presentationFor = useCallback((listener: ListenerInfo) => {
+    const managed = managedRows.find(
+      (app) => app.status === "running" && app.port === listener.port && app.listener?.pid === listener.pid,
+    );
+    if (managed) return { primary: managed.name, secondary: listener.processName, kind: "managed" as const };
+
+    const inferred = inferredRuntimeLabel(listener);
+    if (inferred && inferred.toLowerCase() !== listener.processName.toLowerCase()) {
+      return { primary: inferred, secondary: listener.processName, kind: "inferred" as const };
+    }
+    return { primary: listener.processName, secondary: undefined, kind: "process" as const };
+  }, [managedRows]);
+
   const filteredListeners = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return listeners;
-    return listeners.filter((listener) =>
-      [listener.port, listener.pid, listener.processName, listener.localAddress, listener.protocol]
-        .join(" ")
-        .toLowerCase()
-        .includes(needle),
-    );
-  }, [listeners, query]);
+    return listeners.filter((listener) => {
+      const presentation = presentationFor(listener);
+      return [
+        listener.port,
+        listener.pid,
+        listener.processName,
+        listener.commandLine,
+        presentation.primary,
+        listener.localAddress,
+        listener.protocol,
+      ].join(" ").toLowerCase().includes(needle);
+    });
+  }, [listeners, presentationFor, query]);
 
   const runningCount = managedRows.filter((row) => row.status === "running").length;
 
@@ -344,7 +411,7 @@ function App() {
             <thead>
               <tr>
                 <th>Port</th>
-                <th>Process</th>
+                <th>App / Process</th>
                 <th>PID</th>
                 <th>Bind</th>
                 <th>Protocol</th>
@@ -353,13 +420,19 @@ function App() {
             </thead>
             <tbody>
               {filteredListeners.map((listener) => {
+                const presentation = presentationFor(listener);
                 const managedListener = managedRows.some(
                   (app) => app.status === "running" && app.port === listener.port,
                 );
                 return (
                   <tr key={`${listener.protocol}-${listener.localAddress}-${listener.port}-${listener.pid}`}>
                     <td><span className="port-chip">:{listener.port}</span></td>
-                    <td className="process-cell">{listener.processName}</td>
+                    <td className="process-cell" title={listener.commandLine ?? listener.processName}>
+                      <span className="process-primary">{presentation.primary}</span>
+                      {presentation.secondary && (
+                        <span className="process-secondary">{presentation.secondary}</span>
+                      )}
+                    </td>
                     <td className="mono-cell">{listener.pid}</td>
                     <td className="mono-cell muted-cell">{listener.localAddress}</td>
                     <td><span className="protocol-chip">{listener.protocol}</span></td>

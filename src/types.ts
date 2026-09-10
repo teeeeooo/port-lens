@@ -4,6 +4,7 @@ export interface ListenerInfo {
   port: number;
   pid: number;
   processName: string;
+  commandLine?: string;
 }
 
 export interface ManagedApp {

@@ -56,7 +56,14 @@ export async function mockStartApp(appId: string) {
   state.runtimes = state.runtimes.filter((item) => item.appId !== appId);
   state.runtimes.push(runtime);
   if (!state.listeners.some((listener) => listener.port === app.port)) {
-    state.listeners.push({ protocol: "TCP", localAddress: "127.0.0.1", port: app.port, pid: runtime.rootPid, processName: "node" });
+    state.listeners.push({
+      protocol: "TCP",
+      localAddress: "127.0.0.1",
+      port: app.port,
+      pid: runtime.rootPid,
+      processName: "node",
+      commandLine: app.command,
+    });
   }
   return clone(runtime);
 }
