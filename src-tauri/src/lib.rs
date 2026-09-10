@@ -302,13 +302,7 @@ pub fn run() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit Port Lens", true, None::<&str>)?;
             let menu =
                 Menu::with_items(app, &[&show_item, &bubble_item, &refresh_item, &quit_item])?;
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .ok_or("Default application icon is missing")?;
-
-            TrayIconBuilder::with_id("main-tray")
-                .icon(icon)
+            let mut tray_builder = TrayIconBuilder::with_id("main-tray")
                 .tooltip("Port Lens")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -337,8 +331,24 @@ pub fn run() {
                     {
                         show_main_window(tray.app_handle());
                     }
-                })
-                .build(app)?;
+                });
+
+            #[cfg(target_os = "macos")]
+            {
+                let tray_icon =
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/tray-port-lens.png"))?;
+                tray_builder = tray_builder.icon(tray_icon).icon_as_template(true);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .ok_or("Default application icon is missing")?;
+                tray_builder = tray_builder.icon(icon);
+            }
+
+            tray_builder.build(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
