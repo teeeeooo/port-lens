@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows installers
+    name: Build Windows packages
     runs-on: windows-latest
 
     steps:
@@ -26,8 +26,15 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
-      - name: Build Windows installers
+      - name: Build Windows packages
         run: npm run tauri build
+
+      - name: Prepare portable executable
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force -Path dist-portable | Out-Null
+          Copy-Item "src-tauri/target/release/port-lens.exe" "dist-portable/Port.Lens_${version}_x64-portable.exe"
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v6
@@ -41,4 +48,11 @@ jobs:
         with:
           name: port-lens-windows-msi
           path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v6
+        with:
+          name: port-lens-windows-portable
+          path: dist-portable/Port.Lens_*_x64-portable.exe
           if-no-files-found: error
