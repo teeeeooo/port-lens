@@ -2,10 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   isDevMockMode,
   mockGetApps,
+  mockGetExits,
   mockGetListeners,
+  mockGetMonitoredListeners,
   mockGetRuntimes,
   mockGetSettings,
   mockKillListener,
+  mockOpenLogs,
   mockRemoveApp,
   mockRestartApp,
   mockSaveApp,
@@ -13,16 +16,22 @@ import {
   mockStopApp,
   mockUpdateSettings,
 } from "./devMock";
-import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, SettingsPatch } from "./types";
+import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, SettingsPatch } from "./types";
 
 export const getListeners = () =>
   isDevMockMode ? mockGetListeners() : invoke<ListenerInfo[]>("get_listeners");
+
+export const getMonitoredListeners = () =>
+  isDevMockMode ? mockGetMonitoredListeners() : invoke<ListenerInfo[]>("get_monitored_listeners");
 
 export const getManagedApps = () =>
   isDevMockMode ? mockGetApps() : invoke<ManagedApp[]>("get_managed_apps");
 
 export const getManagedRuntimes = () =>
   isDevMockMode ? mockGetRuntimes() : invoke<ManagedRuntime[]>("get_managed_runtimes");
+
+export const getManagedExits = () =>
+  isDevMockMode ? mockGetExits() : invoke<ManagedExitInfo[]>("get_managed_exits");
 
 export const saveManagedApp = (app: ManagedApp) =>
   isDevMockMode ? mockSaveApp(app) : invoke<ManagedApp>("save_managed_app", { app });
@@ -50,6 +59,12 @@ export const getSettings = () =>
 export const updateSettings = (patch: SettingsPatch) =>
   isDevMockMode ? mockUpdateSettings(patch) : invoke<AppSettings>("update_settings", { patch });
 
+export const openLogs = () =>
+  isDevMockMode ? mockOpenLogs() : invoke<void>("open_logs");
+
+export const openManagedAppLogs = (appId: string) =>
+  isDevMockMode ? mockOpenLogs() : invoke<void>("open_managed_app_logs", { appId });
+
 const mockBubbleState = (): BubbleState => ({
   collapsed: new URLSearchParams(window.location.search).get("bubble") === "1",
 });
@@ -61,6 +76,18 @@ export const collapseToBubble = () =>
   isDevMockMode
     ? Promise.resolve<BubbleState>({ collapsed: true })
     : invoke<BubbleState>("collapse_to_bubble");
+
+export const minimizeMainWindow = () =>
+  isDevMockMode
+    ? Promise.resolve<BubbleState>({ collapsed: true })
+    : invoke<BubbleState>("minimize_main_window");
+
+export const moveCompactBubble = (offsetRatioX: number, offsetRatioY: number, persist = false) =>
+  isDevMockMode
+    ? Promise.resolve(mockBubbleState())
+    : invoke<BubbleState>("move_compact_bubble", {
+        offset: { offsetRatioX, offsetRatioY, persist },
+      });
 
 export const expandFromBubble = () =>
   isDevMockMode

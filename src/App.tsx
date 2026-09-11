@@ -1,16 +1,21 @@
-import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  collapseToBubble,
   expandFromBubble,
   getBubbleState,
   getListeners,
+  getMonitoredListeners,
   getSettings,
   getManagedApps,
+  getManagedExits,
   getManagedRuntimes,
   killListenerProcess,
+  minimizeMainWindow,
+  moveCompactBubble,
+  openLogs,
+  openManagedAppLogs,
   removeManagedApp,
   restartManagedApp,
   saveManagedApp,
@@ -21,30 +26,48 @@ import {
 import { isDevMockMode } from "./devMock";
 import SettingsModal from "./SettingsModal";
 import { localizeError, resolveLanguage, t } from "./i18n";
-import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, ManagedStatus } from "./types";
+import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, ManagedStatus } from "./types";
 import "./App.css";
 
 type ManagedRow = ManagedApp & {
   status: ManagedStatus;
   runtime?: ManagedRuntime;
   listener?: ListenerInfo;
+  lastExit?: ManagedExitInfo;
+  launchConfigured: boolean;
+  identityChanged: boolean;
+  recoveredManaged: boolean;
 };
 
 const createDraft = (): ManagedApp => ({
   id: crypto.randomUUID(),
   name: "",
   port: 3000,
-  command: "npm run dev",
+  command: "",
   cwd: "",
 });
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: "system",
   bubbleScale: 1,
+  compactModeEnabled: true,
 };
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function elapsedSeconds(elapsedMs: number) {
+  const seconds = elapsedMs / 1000;
+  return seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString();
+}
+
+function normalizedProcessName(value?: string) {
+  return value?.trim().toLowerCase().replace(/\.exe$/, "") ?? "";
+}
+
+function normalizedCommandLine(value?: string) {
+  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
 }
 
 function pathParts(path: string) {
@@ -99,8 +122,10 @@ function App() {
   const mockParams = isDevMockMode ? new URLSearchParams(window.location.search) : null;
   const mockScreen = mockParams?.get("screen");
   const [listeners, setListeners] = useState<ListenerInfo[]>([]);
+  const [monitoredListeners, setMonitoredListeners] = useState<ListenerInfo[]>([]);
   const [apps, setApps] = useState<ManagedApp[]>([]);
   const [runtimes, setRuntimes] = useState<ManagedRuntime[]>([]);
+  const [exits, setExits] = useState<ManagedExitInfo[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -116,32 +141,115 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
+  const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
+  const managedRefreshInFlight = useRef<Promise<void> | null>(null);
+  const managedStateEpoch = useRef(0);
+  const monitoredRefreshInFlight = useRef<Promise<void> | null>(null);
+  const bubbleDrag = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    offsetRatioX: number;
+    offsetRatioY: number;
+    moved: boolean;
+  } | null>(null);
   const uiLanguage = resolveLanguage(settings.language);
 
-  const refresh = useCallback(async (silent = false) => {
+  const refreshInventory = useCallback((silent = false) => {
+    if (inventoryRefreshInFlight.current) return inventoryRefreshInFlight.current;
     if (!silent) setLoading(true);
-    try {
-      const [nextListeners, nextApps, nextRuntimes] = await Promise.all([
-        getListeners(),
-        getManagedApps(),
-        getManagedRuntimes(),
-      ]);
-      setListeners(nextListeners);
-      setApps(nextApps);
-      setRuntimes(nextRuntimes);
-      setError(null);
-    } catch (refreshError) {
-      setError(messageOf(refreshError));
-    } finally {
-      if (!silent) setLoading(false);
-    }
+
+    const task = getListeners()
+      .then((nextListeners) => {
+        setListeners(nextListeners);
+        setError(null);
+      })
+      .catch((refreshError) => setError(messageOf(refreshError)))
+      .finally(() => {
+        if (!silent) setLoading(false);
+        inventoryRefreshInFlight.current = null;
+      });
+
+    inventoryRefreshInFlight.current = task;
+    return task;
   }, []);
 
+  const refreshManagedState = useCallback((force = false) => {
+    if (!force && managedRefreshInFlight.current) return managedRefreshInFlight.current;
+    if (force) managedStateEpoch.current += 1;
+    const epoch = managedStateEpoch.current;
+    const task = Promise.all([getManagedApps(), getManagedRuntimes(), getManagedExits()])
+      .then(([nextApps, nextRuntimes, nextExits]) => {
+        if (epoch !== managedStateEpoch.current) return;
+        setApps(nextApps);
+        setRuntimes(nextRuntimes);
+        setExits(nextExits);
+      })
+      .catch((refreshError) => setError(messageOf(refreshError)));
+
+    if (!force) {
+      managedRefreshInFlight.current = task;
+      void task.finally(() => {
+        if (managedRefreshInFlight.current === task) managedRefreshInFlight.current = null;
+      });
+    }
+    return task;
+  }, []);
+
+  const refreshMonitored = useCallback(() => {
+    if (monitoredRefreshInFlight.current) return monitoredRefreshInFlight.current;
+    const task = getMonitoredListeners()
+      .then((nextListeners) => setMonitoredListeners(nextListeners))
+      .catch((refreshError) => setError(messageOf(refreshError)))
+      .finally(() => {
+        monitoredRefreshInFlight.current = null;
+      });
+    monitoredRefreshInFlight.current = task;
+    return task;
+  }, []);
+
+  const refreshAll = useCallback(async (silent = false, forceManaged = false) => {
+    await Promise.all([
+      refreshInventory(silent),
+      refreshMonitored(),
+      refreshManagedState(forceManaged),
+    ]);
+  }, [refreshInventory, refreshManagedState, refreshMonitored]);
+
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(true), 4000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+    let stopped = false;
+    let timer: number | undefined;
+    const scheduleNext = () => {
+      if (stopped) return;
+      timer = window.setTimeout(async () => {
+        await refreshInventory(true);
+        scheduleNext();
+      }, 10_000);
+    };
+    void refreshInventory().finally(scheduleNext);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [refreshInventory]);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const refreshFastState = () => Promise.all([refreshMonitored(), refreshManagedState()]);
+    const scheduleNext = () => {
+      if (stopped) return;
+      timer = window.setTimeout(async () => {
+        await refreshFastState();
+        scheduleNext();
+      }, 3_000);
+    };
+    void refreshFastState().finally(scheduleNext);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [refreshManagedState, refreshMonitored]);
 
   useEffect(() => {
     void getSettings()
@@ -177,32 +285,71 @@ function App() {
       if (active) setBubbleMode(event.payload.collapsed);
     }).then((unlisten) => cleanups.push(unlisten));
 
-    void listen("port-lens://refresh", () => void refresh(true)).then((unlisten) => cleanups.push(unlisten));
+    void listen("port-lens://refresh", () => void refreshAll(true, true)).then((unlisten) => cleanups.push(unlisten));
 
     return () => {
       active = false;
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [refresh]);
+  }, [refreshAll]);
 
   const managedRows = useMemo<ManagedRow[]>(() => {
     const runtimeByApp = new Map(runtimes.map((runtime) => [runtime.appId, runtime]));
+    const exitByApp = new Map(exits.map((exit) => [exit.appId, exit]));
     const listenerByPort = new Map<number, ListenerInfo>();
-    for (const listener of listeners) {
+    for (const listener of monitoredListeners) {
       if (!listenerByPort.has(listener.port)) listenerByPort.set(listener.port, listener);
     }
 
     return apps.map((app) => {
       const runtime = runtimeByApp.get(app.id);
       const listener = listenerByPort.get(app.port);
-      const status: ManagedStatus = runtime ? "running" : listener ? "occupied" : "stopped";
-      return { ...app, runtime, listener, status };
+      const lastExit = exitByApp.get(app.id);
+      const launchConfigured = Boolean(app.command?.trim() && app.cwd?.trim());
+      const managedProcessMatches = Boolean(
+        listener && app.lastManagedProcessName
+        && normalizedProcessName(listener.processName) === normalizedProcessName(app.lastManagedProcessName),
+      );
+      const managedPidMatches = Boolean(
+        listener && app.lastManagedPid && listener.pid === app.lastManagedPid,
+      );
+      const managedCommandMatches = Boolean(
+        listener?.commandLine && app.lastManagedCommandLine
+        && normalizedCommandLine(listener.commandLine) === normalizedCommandLine(app.lastManagedCommandLine),
+      );
+      const recoveredManaged = Boolean(
+        !runtime && listener && managedProcessMatches && (managedPidMatches || managedCommandMatches),
+      );
+      const processChanged = Boolean(
+        listener && app.lastProcessName
+        && normalizedProcessName(listener.processName) !== normalizedProcessName(app.lastProcessName),
+      );
+      const commandChanged = Boolean(
+        listener?.commandLine && app.lastCommandLine
+        && normalizedCommandLine(listener.commandLine) !== normalizedCommandLine(app.lastCommandLine),
+      );
+      const identityChanged = !runtime && !recoveredManaged && (processChanged || commandChanged);
+      const status: ManagedStatus = runtime
+        ? listener ? "running" : "starting"
+        : identityChanged
+          ? "changed"
+          : listener ? "online" : "offline";
+      return {
+        ...app,
+        runtime,
+        listener,
+        lastExit,
+        launchConfigured,
+        identityChanged,
+        recoveredManaged,
+        status,
+      };
     });
-  }, [apps, listeners, runtimes]);
+  }, [apps, exits, monitoredListeners, runtimes]);
 
   const presentationFor = useCallback((listener: ListenerInfo) => {
     const managed = managedRows.find(
-      (app) => app.status === "running" && app.port === listener.port && app.listener?.pid === listener.pid,
+      (app) => !app.identityChanged && app.port === listener.port && app.listener?.pid === listener.pid,
     );
     if (managed) return { primary: managed.name, secondary: listener.processName, kind: "managed" as const };
 
@@ -230,7 +377,8 @@ function App() {
     });
   }, [listeners, presentationFor, query]);
 
-  const runningCount = managedRows.filter((row) => row.status === "running").length;
+  const runningCount = managedRows.filter((row) => row.status === "running" || row.status === "starting").length;
+  const onlineAppCount = managedRows.filter((row) => row.listener).length;
 
   const savePreferences = async (patch: Partial<AppSettings>) => {
     try {
@@ -241,9 +389,25 @@ function App() {
     }
   };
 
-  const collapseBubble = async () => {
+  const openDiagnosticLogs = async () => {
     try {
-      const state = await collapseToBubble();
+      await openLogs();
+    } catch (logError) {
+      setError(messageOf(logError));
+    }
+  };
+
+  const openAppLogs = async (appId: string) => {
+    try {
+      await openManagedAppLogs(appId);
+    } catch (logError) {
+      setError(messageOf(logError));
+    }
+  };
+
+  const minimizeWindow = async () => {
+    try {
+      const state = await minimizeMainWindow();
       setBubbleMode(state.collapsed);
     } catch (bubbleError) {
       setError(messageOf(bubbleError));
@@ -259,37 +423,136 @@ function App() {
     }
   };
 
-  const dragBubble = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0 || isDevMockMode) return;
+  const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as Element).closest("button")) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    bubbleDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startY: event.screenY,
+      offsetRatioX: Math.max(0, Math.min(1, (event.clientX - rect.left) / (rect.width || 1))),
+      offsetRatioY: Math.max(0, Math.min(1, (event.clientY - rect.top) / (rect.height || 1))),
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
-    void getCurrentWindow().startDragging();
   };
 
-  const perform = async (key: string, action: () => Promise<unknown>) => {
+  const moveBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved && Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
+    drag.moved = true;
+    event.currentTarget.classList.add("dragging");
+    void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
+      .then((state) => setBubbleMode(state.collapsed))
+      .catch((bubbleError) => setError(messageOf(bubbleError)));
+    event.preventDefault();
+  };
+
+  const finishBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    bubbleDrag.current = null;
+    event.currentTarget.classList.remove("dragging");
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    if (drag.moved) {
+      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
+        .then((state) => setBubbleMode(state.collapsed))
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    } else {
+      void expandBubble();
+    }
+    event.preventDefault();
+  };
+
+  const cancelBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    bubbleDrag.current = null;
+    event.currentTarget.classList.remove("dragging");
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    if (drag.moved) {
+      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
+        .then((state) => setBubbleMode(state.collapsed))
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    }
+  };
+
+  const perform = async (
+    key: string,
+    action: () => Promise<unknown>,
+    managedMutation = false,
+  ) => {
     setBusy(key);
     setError(null);
+    if (managedMutation) managedStateEpoch.current += 1;
     try {
       await action();
-      await refresh(true);
+      await refreshAll(true, managedMutation);
     } catch (actionError) {
       setError(messageOf(actionError));
+      if (managedMutation) await refreshManagedState(true);
     } finally {
       setBusy(null);
+    }
+  };
+
+  const registerListener = async (listener: ListenerInfo) => {
+    const presentation = presentationFor(listener);
+    const app: ManagedApp = {
+      id: crypto.randomUUID(),
+      name: presentation.primary || `${listener.processName} :${listener.port}`,
+      port: listener.port,
+      lastProcessName: listener.processName,
+      lastCommandLine: listener.commandLine,
+    };
+    await perform(`register:${listener.port}`, async () => {
+      const saved = await saveManagedApp(app);
+      setApps((current) => [...current.filter((item) => item.id !== saved.id), saved]);
+    }, true);
+  };
+
+  const browseWorkingDirectory = async () => {
+    if (!draft) return;
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: draft.cwd || undefined,
+        title: t(uiLanguage, "selectWorkingDirectory"),
+      });
+      if (typeof selected === "string") {
+        setDraft((current) => current ? { ...current, cwd: selected } : current);
+      }
+    } catch (dialogError) {
+      setError(messageOf(dialogError));
     }
   };
 
   const saveDraft = async (event: FormEvent) => {
     event.preventDefault();
     if (!draft) return;
+    const command = draft.command?.trim() ?? "";
+    const cwd = draft.cwd?.trim() ?? "";
+    if (Boolean(command) !== Boolean(cwd)) {
+      setError("Start command and working directory must be configured together.");
+      return;
+    }
     await perform(`save:${draft.id}`, async () => {
-      await saveManagedApp(draft);
+      const saved = await saveManagedApp({ ...draft, command: command || undefined, cwd: cwd || undefined });
+      setApps((current) => current.map((item) => item.id === saved.id ? saved : item));
       setDraft(null);
-    });
+    }, true);
   };
 
   const deleteApp = async (app: ManagedApp) => {
     if (!window.confirm(t(uiLanguage, "removeConfirm", { name: app.name }))) return;
-    await perform(`remove:${app.id}`, () => removeManagedApp(app.id));
+    await perform(`remove:${app.id}`, async () => {
+      await removeManagedApp(app.id);
+      setApps((current) => current.filter((item) => item.id !== app.id));
+      setExits((current) => current.filter((item) => item.appId !== app.id));
+    }, true);
   };
 
   const confirmKill = async () => {
@@ -301,18 +564,26 @@ function App() {
 
   if (bubbleMode) {
     return (
-      <main className="bubble-shell" aria-label="Port Lens compact monitor">
-        <button className="bubble-grip" onPointerDown={dragBubble} aria-label="Drag Port Lens" title="Drag">
-          <img src="/port-lens.svg" alt="" aria-hidden="true" />
-        </button>
-        <button className="bubble-summary" onClick={() => void expandBubble()} title="Open Port Lens">
-          <span className={`status-dot ${runningCount > 0 ? "running" : "stopped"}`} />
-          <strong>{runningCount}/{apps.length}</strong>
+      <main
+        className="bubble-shell"
+        aria-label="Port Lens compact monitor"
+        title="Drag to move · Click to open"
+        onPointerDown={beginBubbleDrag}
+        onPointerMove={moveBubbleDrag}
+        onPointerUp={finishBubbleDrag}
+        onPointerCancel={cancelBubbleDrag}
+      >
+        <div className="bubble-grip" aria-hidden="true">
+          <img src="/port-lens.svg" alt="" />
+        </div>
+        <div className="bubble-summary">
+          <span className={`status-dot ${onlineAppCount > 0 ? "running" : "stopped"}`} />
+          <strong>{onlineAppCount}/{apps.length}</strong>
           <span>apps</span>
           <span className="bubble-divider" />
           <strong>{listeners.length}</strong>
           <span>ports</span>
-        </button>
+        </div>
         <button className="bubble-expand" onClick={() => void expandBubble()} aria-label="Expand Port Lens" title="Expand">
           Open
         </button>
@@ -337,13 +608,14 @@ function App() {
             {runningCount} running
           </div>
           <div className="summary-pill">{listeners.length} listeners</div>
-          <button className="secondary-button" onClick={() => void collapseBubble()}>
-            Compact
+          <div className="summary-pill">{onlineAppCount}/{apps.length} apps online</div>
+          <button className="secondary-button" onClick={() => void minimizeWindow()}>
+            Minimize
           </button>
           <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
             Settings
           </button>
-          <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
+          <button className="secondary-button" onClick={() => void refreshAll()} disabled={loading}>
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
@@ -359,7 +631,7 @@ function App() {
       <section className="panel managed-panel">
         <div className="section-header">
           <div>
-            <h2>Managed apps</h2>
+            <h2>Apps</h2>
             <p>{t(uiLanguage, "managedDescription")}</p>
           </div>
           <button className="primary-button" onClick={() => setDraft(createDraft())}>
@@ -368,17 +640,25 @@ function App() {
         </div>
 
         {managedRows.length === 0 ? (
-          <button className="empty-state" onClick={() => setDraft(createDraft())}>
+          <div className="monitor-empty">
             <strong>{t(uiLanguage, "emptyTitle")}</strong>
             <span>{t(uiLanguage, "emptyDescription")}</span>
-          </button>
+          </div>
         ) : (
           <div className="managed-grid">
             {managedRows.map((app) => {
               const appBusy = busy?.includes(app.id) ?? false;
               const stateLabel = app.status === "running"
-                ? app.listener ? "Running" : "Starting"
-                : app.status === "occupied" ? "Port occupied" : "Stopped";
+                ? "Running"
+                : app.status === "starting"
+                  ? "Starting"
+                  : app.status === "online"
+                    ? "Online"
+                    : app.status === "changed"
+                      ? "Different process"
+                      : "Offline";
+              const canStart = app.launchConfigured && app.status === "offline" && !app.runtime;
+              const canRestart = app.launchConfigured && Boolean(app.runtime);
               return (
                 <article className={`managed-card ${app.status}`} key={app.id}>
                   <div className="managed-card-head">
@@ -389,43 +669,77 @@ function App() {
                       </div>
                       <span className={`status-label ${app.status}`}>{stateLabel}</span>
                     </div>
-                    <button className="icon-button" aria-label={`Edit ${app.name}`} onClick={() => setDraft({ ...app })}>
+                    <button
+                      className="icon-button"
+                      aria-label={`Edit ${app.name}`}
+                      disabled={Boolean(app.runtime)}
+                      title={app.runtime ? "Stop this App before editing its launch settings" : "Edit App"}
+                      onClick={() => setDraft({ ...app })}
+                    >
                       Edit
                     </button>
                   </div>
                   <div className="app-meta">
                     <div><span>Port</span><strong>{app.port}</strong></div>
-                    <div><span>Process</span><strong>{app.listener?.processName ?? "—"}</strong></div>
+                    <div><span>Process</span><strong>{app.listener?.processName ?? app.lastProcessName ?? "—"}</strong></div>
                     <div><span>PID</span><strong>{app.listener?.pid ?? app.runtime?.rootPid ?? "—"}</strong></div>
                   </div>
-                  <div className="command-line" title={app.command}>{app.command}</div>
-                  <div className="cwd-line" title={app.cwd}>{app.cwd}</div>
+                  {app.launchConfigured ? (
+                    <>
+                      <div className="command-line" title={app.command}>{app.command}</div>
+                      <div className="cwd-line" title={app.cwd}>{app.cwd}</div>
+                    </>
+                  ) : (
+                    <div className="launch-note">{t(uiLanguage, "monitoringOnlyNote")}</div>
+                  )}
 
-                  {app.status === "occupied" && app.listener && (
-                    <div className="conflict-note">
-                      {t(uiLanguage, "conflict", { port: app.port, process: app.listener.processName, pid: app.listener.pid })}
+                  {app.identityChanged && app.listener && (
+                    <div className="conflict-note">{t(uiLanguage, "differentProcessWarning")}</div>
+                  )}
+
+                  {app.recoveredManaged && (
+                    <div className="managed-origin-note">{t(uiLanguage, "previouslyManagedNote")}</div>
+                  )}
+
+                  {app.lastExit && !app.runtime && (
+                    <div className={`exit-note ${app.lastExit.earlyExit ? "early" : ""}`}>
+                      {t(uiLanguage, app.lastExit.earlyExit ? "earlyExitNotice" : "lastExitNotice", {
+                        code: app.lastExit.exitCode ?? "?",
+                        seconds: elapsedSeconds(app.lastExit.elapsedMs),
+                      })}
                     </div>
                   )}
 
                   <div className="card-actions">
-                    {app.status === "running" ? (
+                    {app.runtime ? (
                       <>
-                        <button disabled={appBusy} onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id))}>
+                        <button disabled={appBusy || !canRestart} onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id), true)}>
                           Restart
                         </button>
-                        <button className="danger-soft" disabled={appBusy} onClick={() => void perform(`stop:${app.id}`, () => stopManagedApp(app.id))}>
+                        <button className="danger-soft" disabled={appBusy} onClick={() => void perform(`stop:${app.id}`, () => stopManagedApp(app.id), true)}>
                           Stop
                         </button>
                       </>
                     ) : (
-                      <button className="primary-button" disabled={appBusy || app.status === "occupied"} onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id))}>
+                      <button
+                        className="primary-button"
+                        disabled={appBusy || !canStart}
+                        title={!app.launchConfigured ? "Configure launch settings in Edit" : app.listener ? "Port is already online" : "Start app"}
+                        onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id), true)}
+                      >
                         Start
                       </button>
                     )}
                     <button disabled={!app.listener} onClick={() => void openUrl(`http://localhost:${app.port}`)}>
                       Open
                     </button>
-                    <button className="ghost-button" disabled={app.status === "running"} onClick={() => void deleteApp(app)}>
+                    <button
+                      title="Open captured stdout/stderr logs. Output is captured when Port Lens starts this App."
+                      onClick={() => void openAppLogs(app.id)}
+                    >
+                      Logs
+                    </button>
+                    <button className="ghost-button" disabled={Boolean(app.runtime)} onClick={() => void deleteApp(app)}>
                       Remove
                     </button>
                   </div>
@@ -467,8 +781,9 @@ function App() {
             <tbody>
               {filteredListeners.map((listener) => {
                 const presentation = presentationFor(listener);
-                const managedListener = managedRows.some(
-                  (app) => app.status === "running" && app.port === listener.port,
+                const registered = apps.some((app) => app.port === listener.port);
+                const portLensRuntime = managedRows.some(
+                  (app) => Boolean(app.runtime) && app.port === listener.port,
                 );
                 return (
                   <tr key={`${listener.protocol}-${listener.localAddress}-${listener.port}-${listener.pid}`}>
@@ -482,16 +797,23 @@ function App() {
                     <td className="mono-cell">{listener.pid}</td>
                     <td className="mono-cell muted-cell">{listener.localAddress}</td>
                     <td><span className="protocol-chip">{listener.protocol}</span></td>
-                    <td className="action-column">
+                    <td className="action-column"><div className="action-group">
+                      <button
+                        className={registered ? "monitor-button active" : "monitor-button"}
+                        disabled={registered || busy === `register:${listener.port}`}
+                        onClick={() => void registerListener(listener)}
+                      >
+                        {registered ? "Registered" : "Register"}
+                      </button>
                       <button
                         className="danger-link"
-                        disabled={managedListener || busy === `kill:${listener.pid}`}
-                        title={managedListener ? "Use the managed app Stop action" : "Terminate this process"}
+                        disabled={portLensRuntime || busy === `kill:${listener.pid}`}
+                        title={portLensRuntime ? "Use the App Stop action" : "Terminate this process"}
                         onClick={() => setKillTarget(listener)}
                       >
                         Kill
                       </button>
-                    </td>
+                    </div></td>
                   </tr>
                 );
               })}
@@ -510,7 +832,7 @@ function App() {
           <form className="modal-card app-editor" onSubmit={saveDraft} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <span className="eyebrow">MANAGED APP</span>
+                <span className="eyebrow">APP</span>
                 <h2>{apps.some((app) => app.id === draft.id) ? "Edit app" : "Add app"}</h2>
               </div>
               <button type="button" className="icon-button" onClick={() => setDraft(null)}>Close</button>
@@ -538,23 +860,24 @@ function App() {
                 />
               </label>
               <label className="grow-label">
-                <span>Start command</span>
+                <span>Start command <em>optional</em></span>
                 <input
-                  required
-                  value={draft.command}
+                  value={draft.command ?? ""}
                   onChange={(event) => setDraft({ ...draft, command: event.currentTarget.value })}
                   placeholder="npm run dev"
                 />
               </label>
             </div>
             <label>
-              <span>Working directory</span>
-              <input
-                required
-                value={draft.cwd}
-                onChange={(event) => setDraft({ ...draft, cwd: event.currentTarget.value })}
-                placeholder="C:\\0.Coding\\my-project"
-              />
+              <span>Working directory <em>optional</em></span>
+              <div className="directory-field">
+                <input
+                  value={draft.cwd ?? ""}
+                  onChange={(event) => setDraft({ ...draft, cwd: event.currentTarget.value })}
+                  placeholder="C:\\0.Coding\\my-project"
+                />
+                <button type="button" onClick={() => void browseWorkingDirectory()}>Browse…</button>
+              </div>
             </label>
             <p className="form-help">{t(uiLanguage, "formHelp")}</p>
             <div className="modal-actions">
@@ -572,6 +895,7 @@ function App() {
           settings={settings}
           language={uiLanguage}
           onChange={savePreferences}
+          onOpenLogs={openDiagnosticLogs}
           onClose={() => setSettingsOpen(false)}
         />
       )}

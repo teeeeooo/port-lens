@@ -7,10 +7,11 @@ interface Props {
   settings: AppSettings;
   language: UiLanguage;
   onChange: (next: Partial<AppSettings>) => Promise<void>;
+  onOpenLogs: () => Promise<void>;
   onClose: () => void;
 }
 
-export default function SettingsModal({ settings, language, onChange, onClose }: Props) {
+export default function SettingsModal({ settings, language, onChange, onOpenLogs, onClose }: Props) {
   const [bubblePercent, setBubblePercent] = useState(Math.round(settings.bubbleScale * 100));
 
   useEffect(() => {
@@ -45,6 +46,21 @@ export default function SettingsModal({ settings, language, onChange, onClose }:
           </select>
         </div>
 
+        <div className="settings-row">
+          <div>
+            <strong>Compact mode</strong>
+            <p>{t(language, "compactModeDescription")}</p>
+          </div>
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={settings.compactModeEnabled}
+              onChange={(event) => void onChange({ compactModeEnabled: event.currentTarget.checked })}
+            />
+            <span>{settings.compactModeEnabled ? "On" : "Off"}</span>
+          </label>
+        </div>
+
         <div className="settings-row settings-slider-row">
           <div>
             <strong>Bubble size</strong>
@@ -57,6 +73,7 @@ export default function SettingsModal({ settings, language, onChange, onClose }:
               max="150"
               step="10"
               value={bubblePercent}
+              disabled={!settings.compactModeEnabled}
               onChange={(event) => setBubblePercent(Number(event.currentTarget.value))}
               onPointerUp={(event) => commitBubbleSize(Number(event.currentTarget.value))}
               onKeyUp={(event) => commitBubbleSize(Number(event.currentTarget.value))}
@@ -64,6 +81,14 @@ export default function SettingsModal({ settings, language, onChange, onClose }:
             />
             <output>{bubblePercent}%</output>
           </div>
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <strong>Diagnostics</strong>
+            <p>{t(language, "diagnosticsDescription")}</p>
+          </div>
+          <button type="button" onClick={() => void onOpenLogs()}>Open logs</button>
         </div>
       </div>
     </div>

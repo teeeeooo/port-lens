@@ -1,9 +1,10 @@
-import type { AppSettings, ListenerInfo, ManagedApp, ManagedRuntime, SettingsPatch } from "./types";
+import type { AppSettings, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, SettingsPatch } from "./types";
 
 interface MockSnapshot {
   listeners: ListenerInfo[];
   apps: ManagedApp[];
   runtimes: ManagedRuntime[];
+  exits?: ManagedExitInfo[];
 }
 
 const requested = new URLSearchParams(window.location.search).get("mock") === "1";
@@ -34,6 +35,10 @@ export async function mockGetRuntimes() {
   return clone((await loadState()).runtimes);
 }
 
+export async function mockGetExits() {
+  return clone((await loadState()).exits ?? []);
+}
+
 export async function mockSaveApp(app: ManagedApp) {
   const state = await loadState();
   const index = state.apps.findIndex((item) => item.id === app.id);
@@ -46,13 +51,16 @@ export async function mockRemoveApp(appId: string) {
   const state = await loadState();
   state.apps = state.apps.filter((app) => app.id !== appId);
   state.runtimes = state.runtimes.filter((runtime) => runtime.appId !== appId);
+  state.exits = (state.exits ?? []).filter((exit) => exit.appId !== appId);
 }
 
 export async function mockStartApp(appId: string) {
   const state = await loadState();
   const app = state.apps.find((item) => item.id === appId);
   if (!app) throw new Error("Mock managed app not found");
+  if (!app.command || !app.cwd) throw new Error("Configure a start command and working directory before starting this App.");
   const runtime = { appId, rootPid: 40000 + state.runtimes.length + 1 };
+  state.exits = (state.exits ?? []).filter((exit) => exit.appId !== appId);
   state.runtimes = state.runtimes.filter((item) => item.appId !== appId);
   state.runtimes.push(runtime);
   if (!state.listeners.some((listener) => listener.port === app.port)) {
@@ -88,6 +96,7 @@ export async function mockKillListener(pid: number, port: number) {
 let mockSettings: AppSettings = {
   language: new URLSearchParams(window.location.search).get("lang") === "ko" ? "ko" : "en",
   bubbleScale: Number(new URLSearchParams(window.location.search).get("bubbleScale") ?? "1") || 1,
+  compactModeEnabled: true,
 };
 
 export async function mockGetSettings() {
@@ -98,4 +107,14 @@ export async function mockUpdateSettings(patch: SettingsPatch) {
   mockSettings = { ...mockSettings, ...patch };
   mockSettings.bubbleScale = Math.round(Math.max(0.7, Math.min(1.5, mockSettings.bubbleScale)) * 10) / 10;
   return clone(mockSettings);
+}
+
+export async function mockGetMonitoredListeners() {
+  const state = await loadState();
+  const watched = new Set(state.apps.map((app) => app.port));
+  return clone(state.listeners.filter((listener) => watched.has(listener.port)));
+}
+
+export async function mockOpenLogs() {
+  return undefined;
 }
