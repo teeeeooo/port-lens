@@ -7,19 +7,21 @@ mod registry;
 mod settings;
 mod window_state;
 
-use diagnostics::Diagnostics;
-use models::{ListenerInfo, ManagedApp, ManagedRuntime};
+use diagnostics::{Diagnostics, ManagedLogPaths};
+use models::{ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime};
 use process_control::{is_process_alive, spawn_managed, terminate_tree};
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
+use std::process::Child;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, State, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
+const EARLY_EXIT_THRESHOLD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MinimizeTarget {
@@ -144,10 +146,115 @@ fn get_managed_runtimes(state: State<'_, AppState>) -> Result<Vec<ManagedRuntime
         .collect())
 }
 
+#[tauri::command]
+fn get_managed_exits(state: State<'_, AppState>) -> Result<Vec<ManagedExitInfo>, String> {
+    state
+        .last_exits
+        .lock()
+        .map(|exits| exits.values().cloned().collect())
+        .map_err(|_| "Exit registry lock is poisoned.".to_string())
+}
+
 fn normalize_optional(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn timestamp_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
+struct ManagedProcessWatch {
+    app_id: String,
+    app_name: String,
+    pid: u32,
+    child: Child,
+    log_paths: ManagedLogPaths,
+    started: Instant,
+}
+
+fn watch_managed_process(
+    app_handle: AppHandle,
+    diagnostics: Diagnostics,
+    watch: ManagedProcessWatch,
+) {
+    thread::spawn(move || {
+        let ManagedProcessWatch {
+            app_id,
+            app_name,
+            pid,
+            mut child,
+            log_paths,
+            started,
+        } = watch;
+        let exit_result = child.wait();
+        let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let exit_code = exit_result.as_ref().ok().and_then(|status| status.code());
+        let state = app_handle.state::<AppState>();
+        let expected = state
+            .expected_exit_pids
+            .lock()
+            .map(|mut pids| pids.remove(&pid))
+            .unwrap_or(false);
+
+        let superseded = if let Ok(mut runtimes) = state.runtime_pids.lock() {
+            match runtimes.get(&app_id).copied() {
+                Some(current_pid) if current_pid == pid => {
+                    runtimes.remove(&app_id);
+                    false
+                }
+                Some(_) => true,
+                None => false,
+            }
+        } else {
+            false
+        };
+
+        let early_exit =
+            !expected && !superseded && elapsed_ms < EARLY_EXIT_THRESHOLD.as_millis() as u64;
+        if !expected && !superseded {
+            let info = ManagedExitInfo {
+                app_id: app_id.clone(),
+                app_name: app_name.clone(),
+                root_pid: pid,
+                exit_code,
+                elapsed_ms,
+                timestamp_ms: timestamp_millis(),
+                early_exit,
+            };
+            if let Ok(mut exits) = state.last_exits.lock() {
+                exits.insert(app_id.clone(), info);
+            }
+        }
+
+        diagnostics.record_managed_process_exit(&log_paths, pid, exit_code, elapsed_ms, expected);
+        let level = if exit_result.is_err() {
+            "ERROR"
+        } else if expected {
+            "INFO"
+        } else {
+            "WARN"
+        };
+        diagnostics.record(
+            level,
+            "managed_process_exit",
+            format!(
+                "appId={app_id} pid={pid} exitCode={} elapsedMs={elapsed_ms} expected={expected} superseded={superseded} earlyExit={early_exit} waitError={}",
+                exit_code
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unavailable".to_owned()),
+                exit_result
+                    .err()
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "none".to_owned())
+            ),
+        );
+        let _ = app_handle.emit_to("main", REFRESH_EVENT, ());
+    });
 }
 
 #[tauri::command]
@@ -219,13 +326,20 @@ fn remove_managed_app(app_id: String, state: State<'_, AppState>) -> Result<(), 
     if apps.len() == previous_len {
         return Err("App was not found.".into());
     }
-    state.persist_apps(&apps)
+    state.persist_apps(&apps)?;
+    state
+        .last_exits
+        .lock()
+        .map_err(|_| "Exit registry lock is poisoned.".to_string())?
+        .remove(&app_id);
+    Ok(())
 }
 
 async fn start_by_id(
     app_id: &str,
     state: &AppState,
     diagnostics: Diagnostics,
+    app_handle: &AppHandle,
 ) -> Result<ManagedRuntime, String> {
     {
         let mut runtimes = state
@@ -267,21 +381,43 @@ async fn start_by_id(
     }
 
     let log_paths = diagnostics.prepare_managed_logs(&app.id, &app.name)?;
-    let pid = spawn_managed(command, cwd, &log_paths)?;
-    diagnostics.record(
-        "INFO",
-        "managed_output",
-        format!(
-            "action=start appId={} logDir={}",
-            app.id,
-            log_paths.directory.display()
-        ),
-    );
+    let started = Instant::now();
+    let child = spawn_managed(command, cwd, &log_paths)?;
+    let pid = child.id();
+
+    state
+        .last_exits
+        .lock()
+        .map_err(|_| "Exit registry lock is poisoned.".to_string())?
+        .remove(&app.id);
     state
         .runtime_pids
         .lock()
         .map_err(|_| "Runtime registry lock is poisoned.".to_string())?
         .insert(app.id.clone(), pid);
+
+    diagnostics.record(
+        "INFO",
+        "managed_process_start",
+        format!(
+            "appId={} pid={pid} port={} logDir={}",
+            app.id,
+            app.port,
+            log_paths.directory.display()
+        ),
+    );
+    watch_managed_process(
+        app_handle.clone(),
+        diagnostics,
+        ManagedProcessWatch {
+            app_id: app.id.clone(),
+            app_name: app.name.clone(),
+            pid,
+            child,
+            log_paths,
+            started,
+        },
+    );
 
     Ok(ManagedRuntime {
         app_id: app.id,
@@ -301,7 +437,17 @@ fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
         })?;
 
     if is_process_alive(pid) {
-        terminate_tree(pid)?;
+        state
+            .expected_exit_pids
+            .lock()
+            .map_err(|_| "Expected-exit registry lock is poisoned.".to_string())?
+            .insert(pid);
+        if let Err(error) = terminate_tree(pid) {
+            if let Ok(mut expected) = state.expected_exit_pids.lock() {
+                expected.remove(&pid);
+            }
+            return Err(error);
+        }
     }
     state
         .runtime_pids
@@ -324,12 +470,13 @@ fn record_failure<T>(
 
 #[tauri::command]
 async fn start_managed_app(
+    app_handle: AppHandle,
     app_id: String,
     state: State<'_, AppState>,
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<ManagedRuntime, String> {
     let diagnostics = diagnostics.inner().clone();
-    let result = start_by_id(&app_id, &state, diagnostics.clone()).await;
+    let result = start_by_id(&app_id, &state, diagnostics.clone(), &app_handle).await;
     record_failure(
         &diagnostics,
         "managed_action",
@@ -357,6 +504,7 @@ fn stop_managed_app(
 
 #[tauri::command]
 async fn restart_managed_app(
+    app_handle: AppHandle,
     app_id: String,
     state: State<'_, AppState>,
     diagnostics: State<'_, Diagnostics>,
@@ -367,7 +515,7 @@ async fn restart_managed_app(
         tauri::async_runtime::spawn_blocking(|| thread::sleep(Duration::from_millis(300)))
             .await
             .map_err(|error| format!("Restart delay worker failed: {error}"))?;
-        start_by_id(&app_id, &state, diagnostics.clone()).await
+        start_by_id(&app_id, &state, diagnostics.clone(), &app_handle).await
     }
     .await;
     record_failure(
@@ -774,6 +922,7 @@ pub fn run() {
             get_monitored_listeners,
             get_managed_apps,
             get_managed_runtimes,
+            get_managed_exits,
             save_managed_app,
             remove_managed_app,
             start_managed_app,

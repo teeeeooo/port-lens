@@ -22,6 +22,16 @@ export interface ManagedRuntime {
   rootPid: number;
 }
 
+export interface ManagedExitInfo {
+  appId: string;
+  appName: string;
+  rootPid: number;
+  exitCode?: number;
+  elapsedMs: number;
+  timestampMs: number;
+  earlyExit: boolean;
+}
+
 export interface BubbleState {
   collapsed: boolean;
 }

@@ -1,6 +1,6 @@
 use crate::diagnostics::Diagnostics;
-use crate::models::ManagedApp;
-use std::collections::HashMap;
+use crate::models::{ManagedApp, ManagedExitInfo};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -11,6 +11,8 @@ pub struct AppState {
     diagnostics: Diagnostics,
     pub apps: Mutex<Vec<ManagedApp>>,
     pub runtime_pids: Mutex<HashMap<String, u32>>,
+    pub expected_exit_pids: Mutex<HashSet<u32>>,
+    pub last_exits: Mutex<HashMap<String, ManagedExitInfo>>,
 }
 
 impl AppState {
@@ -35,6 +37,8 @@ impl AppState {
             diagnostics,
             apps: Mutex::new(apps),
             runtime_pids: Mutex::new(HashMap::new()),
+            expected_exit_pids: Mutex::new(HashSet::new()),
+            last_exits: Mutex::new(HashMap::new()),
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::diagnostics::ManagedLogPaths;
 use std::fs::OpenOptions;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -11,7 +11,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result<u32, String> {
+pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result<Child, String> {
     if command.trim().is_empty() {
         return Err("Start command cannot be empty.".into());
     }
@@ -49,9 +49,7 @@ pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result
         .stderr(Stdio::from(stderr))
         .spawn();
 
-    child
-        .map(|child| child.id())
-        .map_err(|error| format!("Failed to start command: {error}"))
+    child.map_err(|error| format!("Failed to start command: {error}"))
 }
 
 pub fn terminate_tree(pid: u32) -> Result<(), String> {
@@ -143,12 +141,13 @@ mod tests {
         let logs = diagnostics
             .prepare_managed_logs("capture-test", "Capture Test")
             .unwrap();
-        spawn_managed(
+        let mut child = spawn_managed(
             "echo port-lens-stdout && echo port-lens-stderr 1>&2",
             root.to_str().unwrap(),
             &logs,
         )
         .unwrap();
+        assert!(child.wait().unwrap().success());
 
         let mut captured = false;
         for _ in 0..40 {

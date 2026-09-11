@@ -9,6 +9,7 @@ import {
   getMonitoredListeners,
   getSettings,
   getManagedApps,
+  getManagedExits,
   getManagedRuntimes,
   killListenerProcess,
   minimizeMainWindow,
@@ -25,13 +26,14 @@ import {
 import { isDevMockMode } from "./devMock";
 import SettingsModal from "./SettingsModal";
 import { localizeError, resolveLanguage, t } from "./i18n";
-import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, ManagedStatus } from "./types";
+import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, ManagedStatus } from "./types";
 import "./App.css";
 
 type ManagedRow = ManagedApp & {
   status: ManagedStatus;
   runtime?: ManagedRuntime;
   listener?: ListenerInfo;
+  lastExit?: ManagedExitInfo;
   launchConfigured: boolean;
   identityChanged: boolean;
 };
@@ -52,6 +54,11 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function elapsedSeconds(elapsedMs: number) {
+  const seconds = elapsedMs / 1000;
+  return seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString();
 }
 
 function pathParts(path: string) {
@@ -109,6 +116,7 @@ function App() {
   const [monitoredListeners, setMonitoredListeners] = useState<ListenerInfo[]>([]);
   const [apps, setApps] = useState<ManagedApp[]>([]);
   const [runtimes, setRuntimes] = useState<ManagedRuntime[]>([]);
+  const [exits, setExits] = useState<ManagedExitInfo[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -125,6 +133,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
   const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
+  const managedRefreshInFlight = useRef<Promise<void> | null>(null);
+  const managedStateEpoch = useRef(0);
   const monitoredRefreshInFlight = useRef<Promise<void> | null>(null);
   const bubbleDrag = useRef<{
     pointerId: number;
@@ -140,26 +150,40 @@ function App() {
     if (inventoryRefreshInFlight.current) return inventoryRefreshInFlight.current;
     if (!silent) setLoading(true);
 
-    const task = (async () => {
-      try {
-        const [nextListeners, nextApps, nextRuntimes] = await Promise.all([
-          getListeners(),
-          getManagedApps(),
-          getManagedRuntimes(),
-        ]);
+    const task = getListeners()
+      .then((nextListeners) => {
         setListeners(nextListeners);
-        setApps(nextApps);
-        setRuntimes(nextRuntimes);
         setError(null);
-      } catch (refreshError) {
-        setError(messageOf(refreshError));
-      } finally {
+      })
+      .catch((refreshError) => setError(messageOf(refreshError)))
+      .finally(() => {
         if (!silent) setLoading(false);
         inventoryRefreshInFlight.current = null;
-      }
-    })();
+      });
 
     inventoryRefreshInFlight.current = task;
+    return task;
+  }, []);
+
+  const refreshManagedState = useCallback((force = false) => {
+    if (!force && managedRefreshInFlight.current) return managedRefreshInFlight.current;
+    if (force) managedStateEpoch.current += 1;
+    const epoch = managedStateEpoch.current;
+    const task = Promise.all([getManagedApps(), getManagedRuntimes(), getManagedExits()])
+      .then(([nextApps, nextRuntimes, nextExits]) => {
+        if (epoch !== managedStateEpoch.current) return;
+        setApps(nextApps);
+        setRuntimes(nextRuntimes);
+        setExits(nextExits);
+      })
+      .catch((refreshError) => setError(messageOf(refreshError)));
+
+    if (!force) {
+      managedRefreshInFlight.current = task;
+      void task.finally(() => {
+        if (managedRefreshInFlight.current === task) managedRefreshInFlight.current = null;
+      });
+    }
     return task;
   }, []);
 
@@ -175,9 +199,13 @@ function App() {
     return task;
   }, []);
 
-  const refreshAll = useCallback(async (silent = false) => {
-    await Promise.all([refreshInventory(silent), refreshMonitored()]);
-  }, [refreshInventory, refreshMonitored]);
+  const refreshAll = useCallback(async (silent = false, forceManaged = false) => {
+    await Promise.all([
+      refreshInventory(silent),
+      refreshMonitored(),
+      refreshManagedState(forceManaged),
+    ]);
+  }, [refreshInventory, refreshManagedState, refreshMonitored]);
 
   useEffect(() => {
     let stopped = false;
@@ -199,19 +227,20 @@ function App() {
   useEffect(() => {
     let stopped = false;
     let timer: number | undefined;
+    const refreshFastState = () => Promise.all([refreshMonitored(), refreshManagedState()]);
     const scheduleNext = () => {
       if (stopped) return;
       timer = window.setTimeout(async () => {
-        await refreshMonitored();
+        await refreshFastState();
         scheduleNext();
       }, 3_000);
     };
-    void refreshMonitored().finally(scheduleNext);
+    void refreshFastState().finally(scheduleNext);
     return () => {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [refreshMonitored]);
+  }, [refreshManagedState, refreshMonitored]);
 
   useEffect(() => {
     void getSettings()
@@ -247,7 +276,7 @@ function App() {
       if (active) setBubbleMode(event.payload.collapsed);
     }).then((unlisten) => cleanups.push(unlisten));
 
-    void listen("port-lens://refresh", () => void refreshAll(true)).then((unlisten) => cleanups.push(unlisten));
+    void listen("port-lens://refresh", () => void refreshAll(true, true)).then((unlisten) => cleanups.push(unlisten));
 
     return () => {
       active = false;
@@ -257,6 +286,7 @@ function App() {
 
   const managedRows = useMemo<ManagedRow[]>(() => {
     const runtimeByApp = new Map(runtimes.map((runtime) => [runtime.appId, runtime]));
+    const exitByApp = new Map(exits.map((exit) => [exit.appId, exit]));
     const listenerByPort = new Map<number, ListenerInfo>();
     for (const listener of monitoredListeners) {
       if (!listenerByPort.has(listener.port)) listenerByPort.set(listener.port, listener);
@@ -265,6 +295,7 @@ function App() {
     return apps.map((app) => {
       const runtime = runtimeByApp.get(app.id);
       const listener = listenerByPort.get(app.port);
+      const lastExit = exitByApp.get(app.id);
       const launchConfigured = Boolean(app.command?.trim() && app.cwd?.trim());
       const processChanged = Boolean(
         listener && app.lastProcessName && listener.processName !== app.lastProcessName,
@@ -278,9 +309,9 @@ function App() {
         : identityChanged
           ? "changed"
           : listener ? "online" : "offline";
-      return { ...app, runtime, listener, launchConfigured, identityChanged, status };
+      return { ...app, runtime, listener, lastExit, launchConfigured, identityChanged, status };
     });
-  }, [apps, monitoredListeners, runtimes]);
+  }, [apps, exits, monitoredListeners, runtimes]);
 
   const presentationFor = useCallback((listener: ListenerInfo) => {
     const managed = managedRows.find(
@@ -414,14 +445,20 @@ function App() {
     }
   };
 
-  const perform = async (key: string, action: () => Promise<unknown>) => {
+  const perform = async (
+    key: string,
+    action: () => Promise<unknown>,
+    managedMutation = false,
+  ) => {
     setBusy(key);
     setError(null);
+    if (managedMutation) managedStateEpoch.current += 1;
     try {
       await action();
-      await refreshAll(true);
+      await refreshAll(true, managedMutation);
     } catch (actionError) {
       setError(messageOf(actionError));
+      if (managedMutation) await refreshManagedState(true);
     } finally {
       setBusy(null);
     }
@@ -436,7 +473,10 @@ function App() {
       lastProcessName: listener.processName,
       lastCommandLine: listener.commandLine,
     };
-    await perform(`register:${listener.port}`, () => saveManagedApp(app));
+    await perform(`register:${listener.port}`, async () => {
+      const saved = await saveManagedApp(app);
+      setApps((current) => [...current.filter((item) => item.id !== saved.id), saved]);
+    }, true);
   };
 
   const browseWorkingDirectory = async () => {
@@ -466,14 +506,19 @@ function App() {
       return;
     }
     await perform(`save:${draft.id}`, async () => {
-      await saveManagedApp({ ...draft, command: command || undefined, cwd: cwd || undefined });
+      const saved = await saveManagedApp({ ...draft, command: command || undefined, cwd: cwd || undefined });
+      setApps((current) => current.map((item) => item.id === saved.id ? saved : item));
       setDraft(null);
-    });
+    }, true);
   };
 
   const deleteApp = async (app: ManagedApp) => {
     if (!window.confirm(t(uiLanguage, "removeConfirm", { name: app.name }))) return;
-    await perform(`remove:${app.id}`, () => removeManagedApp(app.id));
+    await perform(`remove:${app.id}`, async () => {
+      await removeManagedApp(app.id);
+      setApps((current) => current.filter((item) => item.id !== app.id));
+      setExits((current) => current.filter((item) => item.appId !== app.id));
+    }, true);
   };
 
   const confirmKill = async () => {
@@ -618,13 +663,22 @@ function App() {
                     <div className="conflict-note">{t(uiLanguage, "differentProcessWarning")}</div>
                   )}
 
+                  {app.lastExit && !app.runtime && (
+                    <div className={`exit-note ${app.lastExit.earlyExit ? "early" : ""}`}>
+                      {t(uiLanguage, app.lastExit.earlyExit ? "earlyExitNotice" : "lastExitNotice", {
+                        code: app.lastExit.exitCode ?? "?",
+                        seconds: elapsedSeconds(app.lastExit.elapsedMs),
+                      })}
+                    </div>
+                  )}
+
                   <div className="card-actions">
                     {app.runtime ? (
                       <>
-                        <button disabled={appBusy || !canRestart} onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id))}>
+                        <button disabled={appBusy || !canRestart} onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id), true)}>
                           Restart
                         </button>
-                        <button className="danger-soft" disabled={appBusy} onClick={() => void perform(`stop:${app.id}`, () => stopManagedApp(app.id))}>
+                        <button className="danger-soft" disabled={appBusy} onClick={() => void perform(`stop:${app.id}`, () => stopManagedApp(app.id), true)}>
                           Stop
                         </button>
                       </>
@@ -633,7 +687,7 @@ function App() {
                         className="primary-button"
                         disabled={appBusy || !canStart}
                         title={!app.launchConfigured ? "Configure launch settings in Edit" : app.listener ? "Port is already online" : "Start app"}
-                        onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id))}
+                        onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id), true)}
                       >
                         Start
                       </button>

@@ -41,6 +41,18 @@ pub struct ManagedRuntime {
     pub root_pid: u32,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedExitInfo {
+    pub app_id: String,
+    pub app_name: String,
+    pub root_pid: u32,
+    pub exit_code: Option<i32>,
+    pub elapsed_ms: u64,
+    pub timestamp_ms: u64,
+    pub early_exit: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

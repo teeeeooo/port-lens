@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   isDevMockMode,
   mockGetApps,
+  mockGetExits,
   mockGetListeners,
   mockGetMonitoredListeners,
   mockGetRuntimes,
@@ -15,7 +16,7 @@ import {
   mockStopApp,
   mockUpdateSettings,
 } from "./devMock";
-import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedRuntime, SettingsPatch } from "./types";
+import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, SettingsPatch } from "./types";
 
 export const getListeners = () =>
   isDevMockMode ? mockGetListeners() : invoke<ListenerInfo[]>("get_listeners");
@@ -28,6 +29,9 @@ export const getManagedApps = () =>
 
 export const getManagedRuntimes = () =>
   isDevMockMode ? mockGetRuntimes() : invoke<ManagedRuntime[]>("get_managed_runtimes");
+
+export const getManagedExits = () =>
+  isDevMockMode ? mockGetExits() : invoke<ManagedExitInfo[]>("get_managed_exits");
 
 export const saveManagedApp = (app: ManagedApp) =>
   isDevMockMode ? mockSaveApp(app) : invoke<ManagedApp>("save_managed_app", { app });

@@ -97,6 +97,23 @@ impl Diagnostics {
         open_folder(&paths.directory)
     }
 
+    pub fn record_managed_process_exit(
+        &self,
+        paths: &ManagedLogPaths,
+        pid: u32,
+        exit_code: Option<i32>,
+        elapsed_ms: u64,
+        expected: bool,
+    ) {
+        let code = exit_code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let footer = format!(
+            "\n=== Port Lens process exit · pid={pid} · code={code} · elapsedMs={elapsed_ms} · expected={expected} ===\n"
+        );
+        let _ = append_text(&paths.stderr, &footer);
+    }
+
     fn managed_log_paths(&self, app_id: &str) -> ManagedLogPaths {
         let directory = self
             .log_dir
@@ -230,6 +247,12 @@ mod tests {
         assert!(fs::read_to_string(&paths.stderr)
             .unwrap()
             .contains("API Server"));
+        diagnostics.record_managed_process_exit(&paths, 42, Some(7), 850, false);
+        let stderr = fs::read_to_string(&paths.stderr).unwrap();
+        assert!(stderr.contains("pid=42"));
+        assert!(stderr.contains("code=7"));
+        assert!(stderr.contains("elapsedMs=850"));
+        assert!(stderr.contains("expected=false"));
         let _ = fs::remove_dir_all(root);
     }
 }
