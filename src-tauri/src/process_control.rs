@@ -18,7 +18,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 #[cfg(windows)]
-const PROCESS_QUERY_TIMEOUT: Duration = Duration::from_secs(8);
+const PROCESS_QUERY_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -82,10 +82,17 @@ pub fn process_ancestry(pid: u32) -> Result<Vec<ProcessSnapshot>, String> {
         r#"
 $current = [uint32]{pid}
 $items = @()
+$byId = @{{}}
+try {{
+  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,CreationDate -ErrorAction Stop | ForEach-Object {{
+    $byId[[uint32]$_.ProcessId] = $_
+  }}
+}} catch {{
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}}
 for ($depth = 0; $depth -lt 16 -and $current -gt 0; $depth++) {{
-  try {{
-    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $current" -ErrorAction Stop
-  }} catch {{ break }}
+  $proc = $byId[$current]
   if ($null -eq $proc) {{ break }}
   $creation = ''
   if ($null -ne $proc.CreationDate) {{ $creation = $proc.CreationDate.ToUniversalTime().ToString('o') }}
