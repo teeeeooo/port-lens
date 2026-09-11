@@ -32,7 +32,7 @@ Suggested branch: `feature/compact-position-polish`
 
 ## 2. Verified managed runtime reattach
 
-Status: implemented on `feature/runtime-reattach`; awaiting native Windows CI/package and manual restart → Stop/Restart verification before merge.
+Status: implemented on `feature/runtime-reattach`; macOS common-path smoke passes. Awaiting refreshed native Windows CI/package and manual restart → Stop/Restart verification before merge.
 
 Goal: restore safe Stop / Restart control for a server that was started by Port Lens, survived Port Lens exit, and is rediscovered after Port Lens restarts.
 
@@ -43,6 +43,9 @@ Implemented behavior on the feature branch:
 - reattach requires exact listener generation, command identity, persisted root generation, and verified ancestor relationship
 - verified runtimes regain Stop / Restart; ambiguous or stale identities remain non-destructive
 - PID reuse is rejected by persisted process creation-time comparison
+- Stop re-verifies the persisted root generation immediately before terminating a reattached runtime; changed identity revokes Stop authority
+- transient ancestry/CIM or command-line lookup failures are retryable instead of permanently suppressing reattach for the same PID
+- macOS smoke coverage exercises a real Node listener through Start-style spawn, targeted listener discovery, managed-identity persistence/reload, and Stop cleanup
 
 Required design constraints:
 - identify the current listener PID for the configured Port
