@@ -1,3 +1,5 @@
+use crate::diagnostics::ManagedLogPaths;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -9,7 +11,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-pub fn spawn_managed(command: &str, cwd: &str) -> Result<u32, String> {
+pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result<u32, String> {
     if command.trim().is_empty() {
         return Err("Start command cannot be empty.".into());
     }
@@ -17,14 +19,25 @@ pub fn spawn_managed(command: &str, cwd: &str) -> Result<u32, String> {
         return Err(format!("Working directory does not exist: {cwd}"));
     }
 
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&logs.stdout)
+        .map_err(|error| format!("Failed to open App stdout log: {error}"))?;
+    let stderr = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&logs.stderr)
+        .map_err(|error| format!("Failed to open App stderr log: {error}"))?;
+
     #[cfg(windows)]
     let child = Command::new("cmd.exe")
         .args(["/D", "/S", "/C", command])
         .current_dir(cwd)
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn();
 
     #[cfg(not(windows))]
@@ -32,8 +45,8 @@ pub fn spawn_managed(command: &str, cwd: &str) -> Result<u32, String> {
         .args(["-lc", command])
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn();
 
     child
@@ -107,11 +120,47 @@ fn guard_pid(pid: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::Diagnostics;
+    use std::fs;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn rejects_protected_pids() {
         assert!(guard_pid(0).is_err());
         assert!(guard_pid(4).is_err());
         assert!(guard_pid(std::process::id()).is_err());
+    }
+
+    #[test]
+    fn managed_process_captures_stdout_and_stderr() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("port-lens-capture-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let diagnostics = Diagnostics::new(root.join("logs")).unwrap();
+        let logs = diagnostics
+            .prepare_managed_logs("capture-test", "Capture Test")
+            .unwrap();
+        spawn_managed(
+            "echo port-lens-stdout && echo port-lens-stderr 1>&2",
+            root.to_str().unwrap(),
+            &logs,
+        )
+        .unwrap();
+
+        let mut captured = false;
+        for _ in 0..40 {
+            let stdout = fs::read_to_string(&logs.stdout).unwrap_or_default();
+            let stderr = fs::read_to_string(&logs.stderr).unwrap_or_default();
+            if stdout.contains("port-lens-stdout") && stderr.contains("port-lens-stderr") {
+                captured = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(captured, "expected stdout and stderr markers in App logs");
+        let _ = fs::remove_dir_all(root);
     }
 }

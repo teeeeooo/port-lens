@@ -255,7 +255,7 @@ async fn start_by_id(
         "Configure a start command and working directory before starting this App.".to_string()
     })?;
 
-    if let Some(blocker) = run_listener_scan("targeted", vec![app.port], diagnostics)
+    if let Some(blocker) = run_listener_scan("targeted", vec![app.port], diagnostics.clone())
         .await?
         .into_iter()
         .next()
@@ -266,7 +266,17 @@ async fn start_by_id(
         ));
     }
 
-    let pid = spawn_managed(command, cwd)?;
+    let log_paths = diagnostics.prepare_managed_logs(&app.id, &app.name)?;
+    let pid = spawn_managed(command, cwd, &log_paths)?;
+    diagnostics.record(
+        "INFO",
+        "managed_output",
+        format!(
+            "action=start appId={} logDir={}",
+            app.id,
+            log_paths.directory.display()
+        ),
+    );
     state
         .runtime_pids
         .lock()
@@ -444,6 +454,31 @@ fn get_settings(
 fn open_logs(diagnostics: State<'_, Diagnostics>) -> Result<(), String> {
     let result = diagnostics.open_log_folder();
     record_failure(&diagnostics, "diagnostics", "open_logs", &result);
+    result
+}
+
+#[tauri::command]
+fn open_managed_app_logs(
+    app_id: String,
+    state: State<'_, AppState>,
+    diagnostics: State<'_, Diagnostics>,
+) -> Result<(), String> {
+    let exists = state
+        .apps
+        .lock()
+        .map_err(|_| "App registry lock is poisoned.".to_string())?
+        .iter()
+        .any(|app| app.id == app_id);
+    if !exists {
+        return Err("App was not found.".into());
+    }
+    let result = diagnostics.open_managed_log_folder(&app_id);
+    record_failure(
+        &diagnostics,
+        "managed_output",
+        &format!("action=open_logs appId={app_id}"),
+        &result,
+    );
     result
 }
 
@@ -747,6 +782,7 @@ pub fn run() {
             kill_listener_process,
             get_settings,
             open_logs,
+            open_managed_app_logs,
             update_settings,
             get_bubble_state,
             collapse_to_bubble,

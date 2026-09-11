@@ -14,6 +14,7 @@ import {
   minimizeMainWindow,
   moveCompactBubble,
   openLogs,
+  openManagedAppLogs,
   removeManagedApp,
   restartManagedApp,
   saveManagedApp,
@@ -331,6 +332,14 @@ function App() {
     }
   };
 
+  const openAppLogs = async (appId: string) => {
+    try {
+      await openManagedAppLogs(appId);
+    } catch (logError) {
+      setError(messageOf(logError));
+    }
+  };
+
   const minimizeWindow = async () => {
     try {
       const state = await minimizeMainWindow();
@@ -631,6 +640,12 @@ function App() {
                     )}
                     <button disabled={!app.listener} onClick={() => void openUrl(`http://localhost:${app.port}`)}>
                       Open
+                    </button>
+                    <button
+                      title="Open captured stdout/stderr logs. Output is captured when Port Lens starts this App."
+                      onClick={() => void openAppLogs(app.id)}
+                    >
+                      Logs
                     </button>
                     <button className="ghost-button" disabled={Boolean(app.runtime)} onClick={() => void deleteApp(app)}>
                       Remove
