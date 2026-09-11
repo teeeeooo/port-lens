@@ -84,6 +84,9 @@ mod tests {
             cwd: Some("/tmp".into()),
             last_process_name: Some("node".into()),
             last_command_line: None,
+            last_managed_pid: Some(4242),
+            last_managed_process_name: Some("node".into()),
+            last_managed_command_line: Some("node server.js".into()),
         };
 
         state.persist_apps(std::slice::from_ref(&app)).unwrap();

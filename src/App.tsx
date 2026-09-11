@@ -36,6 +36,7 @@ type ManagedRow = ManagedApp & {
   lastExit?: ManagedExitInfo;
   launchConfigured: boolean;
   identityChanged: boolean;
+  recoveredManaged: boolean;
 };
 
 const createDraft = (): ManagedApp => ({
@@ -59,6 +60,14 @@ function messageOf(error: unknown) {
 function elapsedSeconds(elapsedMs: number) {
   const seconds = elapsedMs / 1000;
   return seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString();
+}
+
+function normalizedProcessName(value?: string) {
+  return value?.trim().toLowerCase().replace(/\.exe$/, "") ?? "";
+}
+
+function normalizedCommandLine(value?: string) {
+  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
 }
 
 function pathParts(path: string) {
@@ -297,19 +306,44 @@ function App() {
       const listener = listenerByPort.get(app.port);
       const lastExit = exitByApp.get(app.id);
       const launchConfigured = Boolean(app.command?.trim() && app.cwd?.trim());
+      const managedProcessMatches = Boolean(
+        listener && app.lastManagedProcessName
+        && normalizedProcessName(listener.processName) === normalizedProcessName(app.lastManagedProcessName),
+      );
+      const managedPidMatches = Boolean(
+        listener && app.lastManagedPid && listener.pid === app.lastManagedPid,
+      );
+      const managedCommandMatches = Boolean(
+        listener?.commandLine && app.lastManagedCommandLine
+        && normalizedCommandLine(listener.commandLine) === normalizedCommandLine(app.lastManagedCommandLine),
+      );
+      const recoveredManaged = Boolean(
+        !runtime && listener && managedProcessMatches && (managedPidMatches || managedCommandMatches),
+      );
       const processChanged = Boolean(
-        listener && app.lastProcessName && listener.processName !== app.lastProcessName,
+        listener && app.lastProcessName
+        && normalizedProcessName(listener.processName) !== normalizedProcessName(app.lastProcessName),
       );
       const commandChanged = Boolean(
-        listener?.commandLine && app.lastCommandLine && listener.commandLine !== app.lastCommandLine,
+        listener?.commandLine && app.lastCommandLine
+        && normalizedCommandLine(listener.commandLine) !== normalizedCommandLine(app.lastCommandLine),
       );
-      const identityChanged = !runtime && (processChanged || commandChanged);
+      const identityChanged = !runtime && !recoveredManaged && (processChanged || commandChanged);
       const status: ManagedStatus = runtime
         ? listener ? "running" : "starting"
         : identityChanged
           ? "changed"
           : listener ? "online" : "offline";
-      return { ...app, runtime, listener, lastExit, launchConfigured, identityChanged, status };
+      return {
+        ...app,
+        runtime,
+        listener,
+        lastExit,
+        launchConfigured,
+        identityChanged,
+        recoveredManaged,
+        status,
+      };
     });
   }, [apps, exits, monitoredListeners, runtimes]);
 
@@ -661,6 +695,10 @@ function App() {
 
                   {app.identityChanged && app.listener && (
                     <div className="conflict-note">{t(uiLanguage, "differentProcessWarning")}</div>
+                  )}
+
+                  {app.recoveredManaged && (
+                    <div className="managed-origin-note">{t(uiLanguage, "previouslyManagedNote")}</div>
                   )}
 
                   {app.lastExit && !app.runtime && (

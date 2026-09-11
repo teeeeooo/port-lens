@@ -305,6 +305,16 @@ button:hover:not(:disabled) { background: var(--panel-soft); }
   font-size: 11px;
 }
 
+.managed-origin-note {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .exit-note {
   margin-top: 10px;
   padding: 8px 9px;
@@ -469,6 +479,7 @@ tbody tr:hover { background: var(--panel-soft); }
 :lang(ko) .topbar p,
 :lang(ko) .section-header p,
 :lang(ko) .conflict-note,
+:lang(ko) .managed-origin-note,
 :lang(ko) .exit-note,
 :lang(ko) .form-help,
 :lang(ko) .settings-row p,

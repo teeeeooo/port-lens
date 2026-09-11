@@ -12,6 +12,7 @@ use models::{ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime};
 use process_control::{is_process_alive, spawn_managed, terminate_tree};
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
+use std::collections::HashSet;
 use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -96,6 +97,13 @@ async fn get_monitored_listeners(
         .map(|app| app.port)
         .collect::<Vec<_>>();
     let listeners = run_listener_scan("monitored", ports, diagnostics.inner().clone()).await?;
+    let managed_app_ids = state
+        .runtime_pids
+        .lock()
+        .map_err(|_| "Runtime registry lock is poisoned.".to_string())?
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
 
     let mut apps = state
         .apps
@@ -104,14 +112,7 @@ async fn get_monitored_listeners(
     let mut changed = false;
     for app in apps.iter_mut() {
         if let Some(listener) = listeners.iter().find(|listener| listener.port == app.port) {
-            if app.last_process_name.is_none() {
-                app.last_process_name = Some(listener.process_name.clone());
-                changed = true;
-            }
-            if app.last_command_line.is_none() && listener.command_line.is_some() {
-                app.last_command_line = listener.command_line.clone();
-                changed = true;
-            }
+            changed |= app.observe_listener(listener, managed_app_ids.contains(&app.id));
         }
     }
     if changed {
@@ -175,6 +176,69 @@ struct ManagedProcessWatch {
     child: Child,
     log_paths: ManagedLogPaths,
     started: Instant,
+}
+
+async fn capture_managed_identity_after_start(
+    app_handle: AppHandle,
+    diagnostics: Diagnostics,
+    app_id: String,
+    port: u16,
+    root_pid: u32,
+) {
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let state = app_handle.state::<AppState>();
+        let still_owned = state
+            .runtime_pids
+            .lock()
+            .map(|runtimes| runtimes.get(&app_id).copied() == Some(root_pid))
+            .unwrap_or(false);
+        if !still_owned {
+            return;
+        }
+
+        let Ok(listeners) =
+            run_listener_scan("managed_identity", vec![port], diagnostics.clone()).await
+        else {
+            continue;
+        };
+        let Some(listener) = listeners.into_iter().find(|listener| listener.port == port) else {
+            continue;
+        };
+
+        let mut apps = match state.apps.lock() {
+            Ok(apps) => apps,
+            Err(_) => return,
+        };
+        let Some(app) = apps.iter_mut().find(|app| app.id == app_id) else {
+            return;
+        };
+        if app.observe_listener(&listener, true) {
+            if let Err(error) = state.persist_apps(&apps) {
+                diagnostics.record(
+                    "ERROR",
+                    "managed_identity",
+                    format!("appId={app_id} pid={} persistError={error}", listener.pid),
+                );
+                return;
+            }
+        }
+        diagnostics.record(
+            "INFO",
+            "managed_identity",
+            format!(
+                "appId={app_id} rootPid={root_pid} listenerPid={} process={}",
+                listener.pid, listener.process_name
+            ),
+        );
+        return;
+    }
+
+    diagnostics.record(
+        "WARN",
+        "managed_identity",
+        format!("appId={app_id} rootPid={root_pid} port={port} listenerNotObserved=true"),
+    );
 }
 
 fn watch_managed_process(
@@ -265,6 +329,8 @@ fn save_managed_app(mut app: ManagedApp, state: State<'_, AppState>) -> Result<M
     app.cwd = normalize_optional(app.cwd);
     app.last_process_name = normalize_optional(app.last_process_name);
     app.last_command_line = normalize_optional(app.last_command_line);
+    app.last_managed_process_name = normalize_optional(app.last_managed_process_name);
+    app.last_managed_command_line = normalize_optional(app.last_managed_command_line);
 
     if app.id.is_empty() || app.name.is_empty() {
         return Err("Name is required.".into());
@@ -297,8 +363,14 @@ fn save_managed_app(mut app: ManagedApp, state: State<'_, AppState>) -> Result<M
     }
 
     if let Some(existing) = apps.iter_mut().find(|item| item.id == app.id) {
+        app.last_managed_pid = existing.last_managed_pid;
+        app.last_managed_process_name = existing.last_managed_process_name.clone();
+        app.last_managed_command_line = existing.last_managed_command_line.clone();
         *existing = app.clone();
     } else {
+        app.last_managed_pid = None;
+        app.last_managed_process_name = None;
+        app.last_managed_command_line = None;
         apps.push(app.clone());
     }
     apps.sort_by_key(|item| item.name.to_lowercase());
@@ -406,6 +478,13 @@ async fn start_by_id(
             log_paths.directory.display()
         ),
     );
+    tauri::async_runtime::spawn(capture_managed_identity_after_start(
+        app_handle.clone(),
+        diagnostics.clone(),
+        app.id.clone(),
+        app.port,
+        pid,
+    ));
     watch_managed_process(
         app_handle.clone(),
         diagnostics,
@@ -784,6 +863,9 @@ pub fn run() {
                         cwd: None,
                         last_process_name: None,
                         last_command_line: None,
+                        last_managed_pid: None,
+                        last_managed_process_name: None,
+                        last_managed_command_line: None,
                     });
                     changed = true;
                 }

@@ -15,6 +15,9 @@ export interface ManagedApp {
   cwd?: string;
   lastProcessName?: string;
   lastCommandLine?: string;
+  lastManagedPid?: number;
+  lastManagedProcessName?: string;
+  lastManagedCommandLine?: string;
 }
 
 export interface ManagedRuntime {

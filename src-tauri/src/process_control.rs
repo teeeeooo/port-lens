@@ -31,14 +31,17 @@ pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result
         .map_err(|error| format!("Failed to open App stderr log: {error}"))?;
 
     #[cfg(windows)]
-    let child = Command::new("cmd.exe")
-        .args(["/D", "/S", "/C", command])
-        .current_dir(cwd)
-        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn();
+    let child = {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/D", "/S", "/C"])
+            .raw_arg(format!("\"{command}\""))
+            .current_dir(cwd)
+            .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr));
+        cmd.spawn()
+    };
 
     #[cfg(not(windows))]
     let child = Command::new("/bin/zsh")
@@ -160,6 +163,38 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(captured, "expected stdout and stderr markers in App logs");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_preserves_quoted_powershell_paths() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("port lens quoted {nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("quoted script.ps1");
+        let marker = root.join("quoted output.txt");
+        fs::write(
+            &script,
+            "param([string]$OutputPath)\nSet-Content -LiteralPath $OutputPath -Value 'quoted-ok'\n",
+        )
+        .unwrap();
+        let diagnostics = Diagnostics::new(root.join("logs")).unwrap();
+        let logs = diagnostics
+            .prepare_managed_logs("quoted-command-test", "Quoted Command Test")
+            .unwrap();
+        let command = format!(
+            r#"powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{}" -OutputPath "{}""#,
+            script.display(),
+            marker.display()
+        );
+
+        let mut child = spawn_managed(&command, root.to_str().unwrap(), &logs).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(fs::read_to_string(&marker).unwrap().trim(), "quoted-ok");
         let _ = fs::remove_dir_all(root);
     }
 }
