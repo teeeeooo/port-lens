@@ -6,12 +6,14 @@ Items are ordered by intended implementation sequence after the current stabilit
 
 ## 1. Compact position polish
 
+Status: implemented on `feature/compact-position-polish`; awaiting native Windows package/manual verification before merge.
+
 Goal: allow the Windows compact bubble to sit directly above the taskbar without an artificial gap.
 
-Current behavior:
-- Port Lens clamps compact position to monitor `work_area()`.
-- A fixed `EDGE_MARGIN = 12` px is applied on all sides.
-- This creates an unavoidable gap above the Windows taskbar.
+Implemented behavior:
+- Port Lens still clamps compact position to monitor `work_area()`.
+- Windows uses a 0 px compact edge margin so the bubble can touch the work-area boundary without covering the taskbar.
+- Non-Windows desktop behavior retains the existing 12 px edge margin.
 
 Preferred Windows policy:
 - keep the monitor work area as the safe boundary

@@ -5,9 +5,32 @@ use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow}
 
 const BUBBLE_WIDTH: f64 = 276.0;
 const BUBBLE_HEIGHT: f64 = 46.0;
-const EDGE_MARGIN: i32 = 12;
+const DESKTOP_EDGE_MARGIN: i32 = 12;
 const MIN_WIDTH: f64 = 800.0;
 const MIN_HEIGHT: f64 = 580.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactPositionPolicy {
+    Windows,
+    Desktop,
+}
+
+impl CompactPositionPolicy {
+    fn current() -> Self {
+        if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Desktop
+        }
+    }
+
+    fn edge_margin(self) -> i32 {
+        match self {
+            Self::Windows => 0,
+            Self::Desktop => DESKTOP_EDGE_MARGIN,
+        }
+    }
+}
 
 fn bubble_physical_size(bubble_scale: f64, monitor_scale: f64) -> PhysicalSize<u32> {
     PhysicalSize::new(
@@ -74,6 +97,26 @@ fn clamp_i32(value: i64, min: i64, max: i64) -> i32 {
     value.clamp(min, max.max(min)) as i32
 }
 
+fn clamp_to_work_area(
+    work_position: PhysicalPosition<i32>,
+    work_size: PhysicalSize<u32>,
+    size: PhysicalSize<u32>,
+    desired_x: i64,
+    desired_y: i64,
+    edge_margin: i32,
+) -> PhysicalPosition<i32> {
+    let min_x = work_position.x as i64 + edge_margin as i64;
+    let max_x =
+        work_position.x as i64 + work_size.width as i64 - size.width as i64 - edge_margin as i64;
+    let min_y = work_position.y as i64 + edge_margin as i64;
+    let max_y =
+        work_position.y as i64 + work_size.height as i64 - size.height as i64 - edge_margin as i64;
+    PhysicalPosition::new(
+        clamp_i32(desired_x, min_x, max_x),
+        clamp_i32(desired_y, min_y, max_y),
+    )
+}
+
 fn clamp_position(
     monitor: &Monitor,
     size: PhysicalSize<u32>,
@@ -81,15 +124,13 @@ fn clamp_position(
     desired_y: i64,
 ) -> PhysicalPosition<i32> {
     let work = monitor.work_area();
-    let min_x = work.position.x as i64 + EDGE_MARGIN as i64;
-    let max_x =
-        work.position.x as i64 + work.size.width as i64 - size.width as i64 - EDGE_MARGIN as i64;
-    let min_y = work.position.y as i64 + EDGE_MARGIN as i64;
-    let max_y =
-        work.position.y as i64 + work.size.height as i64 - size.height as i64 - EDGE_MARGIN as i64;
-    PhysicalPosition::new(
-        clamp_i32(desired_x, min_x, max_x),
-        clamp_i32(desired_y, min_y, max_y),
+    clamp_to_work_area(
+        work.position,
+        work.size,
+        size,
+        desired_x,
+        desired_y,
+        CompactPositionPolicy::current().edge_margin(),
     )
 }
 
@@ -99,8 +140,9 @@ fn default_collapsed_position(
     desired_y: i32,
 ) -> PhysicalPosition<i32> {
     let work = monitor.work_area();
+    let edge_margin = CompactPositionPolicy::current().edge_margin();
     let desired_x =
-        work.position.x as i64 + work.size.width as i64 - size.width as i64 - EDGE_MARGIN as i64;
+        work.position.x as i64 + work.size.width as i64 - size.width as i64 - edge_margin as i64;
     clamp_position(monitor, size, desired_x, desired_y as i64)
 }
 
@@ -321,5 +363,63 @@ mod tests {
     #[test]
     fn clamp_handles_ranges_smaller_than_the_window() {
         assert_eq!(clamp_i32(500, 100, 50), 100);
+    }
+
+    #[test]
+    fn windows_policy_removes_compact_edge_gap() {
+        assert_eq!(CompactPositionPolicy::Windows.edge_margin(), 0);
+        assert_eq!(
+            CompactPositionPolicy::Desktop.edge_margin(),
+            DESKTOP_EDGE_MARGIN
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_uses_zero_margin_policy() {
+        assert_eq!(
+            CompactPositionPolicy::current(),
+            CompactPositionPolicy::Windows
+        );
+        assert_eq!(CompactPositionPolicy::current().edge_margin(), 0);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn native_non_windows_keeps_desktop_margin_policy() {
+        assert_eq!(
+            CompactPositionPolicy::current(),
+            CompactPositionPolicy::Desktop
+        );
+        assert_eq!(
+            CompactPositionPolicy::current().edge_margin(),
+            DESKTOP_EDGE_MARGIN
+        );
+    }
+
+    #[test]
+    fn zero_margin_clamps_to_work_area_edges() {
+        let work_position = PhysicalPosition::new(100, 50);
+        let work_size = PhysicalSize::new(1920, 1040);
+        let bubble_size = PhysicalSize::new(276, 46);
+
+        let target =
+            clamp_to_work_area(work_position, work_size, bubble_size, i64::MAX, i64::MAX, 0);
+
+        assert_eq!(target, PhysicalPosition::new(1744, 1044));
+    }
+
+    #[test]
+    fn desktop_margin_is_still_preserved() {
+        let target = clamp_to_work_area(
+            PhysicalPosition::new(-1920, 0),
+            PhysicalSize::new(1920, 1080),
+            PhysicalSize::new(276, 46),
+            i64::MIN,
+            i64::MAX,
+            DESKTOP_EDGE_MARGIN,
+        );
+
+        assert_eq!(target, PhysicalPosition::new(-1908, 1022));
     }
 }
