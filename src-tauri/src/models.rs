@@ -32,6 +32,14 @@ pub struct ManagedApp {
     pub last_managed_process_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_managed_command_line: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_managed_listener_creation_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_managed_root_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_managed_root_creation_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_managed_root_command_line: Option<String>,
 }
 
 impl ManagedApp {
@@ -67,6 +75,37 @@ impl ManagedApp {
         }
         changed
     }
+
+    #[cfg(any(windows, test))]
+    pub fn record_managed_launch_identity(
+        &mut self,
+        listener: &ListenerInfo,
+        listener_creation_time: String,
+        root_pid: u32,
+        root_creation_time: String,
+        root_command_line: String,
+    ) -> bool {
+        let mut changed = self.observe_listener(listener, true);
+        if self.last_managed_listener_creation_time.as_deref()
+            != Some(listener_creation_time.as_str())
+        {
+            self.last_managed_listener_creation_time = Some(listener_creation_time);
+            changed = true;
+        }
+        if self.last_managed_root_pid != Some(root_pid) {
+            self.last_managed_root_pid = Some(root_pid);
+            changed = true;
+        }
+        if self.last_managed_root_creation_time.as_deref() != Some(root_creation_time.as_str()) {
+            self.last_managed_root_creation_time = Some(root_creation_time);
+            changed = true;
+        }
+        if self.last_managed_root_command_line.as_deref() != Some(root_command_line.as_str()) {
+            self.last_managed_root_command_line = Some(root_command_line);
+            changed = true;
+        }
+        changed
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +113,7 @@ impl ManagedApp {
 pub struct ManagedRuntime {
     pub app_id: String,
     pub root_pid: u32,
+    pub reattached: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -105,6 +145,10 @@ mod tests {
             last_managed_pid: None,
             last_managed_process_name: None,
             last_managed_command_line: None,
+            last_managed_listener_creation_time: None,
+            last_managed_root_pid: None,
+            last_managed_root_creation_time: None,
+            last_managed_root_command_line: None,
         };
         assert_eq!(app.launch_config(), None);
     }
@@ -122,6 +166,10 @@ mod tests {
             last_managed_pid: None,
             last_managed_process_name: None,
             last_managed_command_line: None,
+            last_managed_listener_creation_time: None,
+            last_managed_root_pid: None,
+            last_managed_root_creation_time: None,
+            last_managed_root_command_line: None,
         };
         assert_eq!(app.launch_config(), None);
         app.cwd = Some("/tmp/api".into());
@@ -140,6 +188,10 @@ mod tests {
             last_managed_pid: None,
             last_managed_process_name: None,
             last_managed_command_line: None,
+            last_managed_listener_creation_time: None,
+            last_managed_root_pid: None,
+            last_managed_root_creation_time: None,
+            last_managed_root_command_line: None,
         };
         let listener = ListenerInfo {
             protocol: "TCP".into(),
@@ -158,5 +210,45 @@ mod tests {
             Some("node server.js")
         );
         assert!(!app.observe_listener(&listener, true));
+    }
+
+    #[test]
+    fn managed_launch_identity_records_process_generations_and_root() {
+        let mut app = ManagedApp {
+            id: "api".into(),
+            name: "API".into(),
+            port: 3101,
+            command: Some("node server.js".into()),
+            cwd: Some("/tmp/api".into()),
+            last_process_name: None,
+            last_command_line: None,
+            last_managed_pid: None,
+            last_managed_process_name: None,
+            last_managed_command_line: None,
+            last_managed_listener_creation_time: None,
+            last_managed_root_pid: None,
+            last_managed_root_creation_time: None,
+            last_managed_root_command_line: None,
+        };
+        let listener = ListenerInfo {
+            protocol: "TCP".into(),
+            local_address: "0.0.0.0".into(),
+            port: 3101,
+            pid: 4242,
+            process_name: "node".into(),
+            command_line: Some("node server.js".into()),
+        };
+        assert!(app.record_managed_launch_identity(
+            &listener,
+            "listener-created".into(),
+            4000,
+            "root-created".into(),
+            "cmd.exe /D /S /C node server.js".into(),
+        ));
+        assert_eq!(app.last_managed_root_pid, Some(4000));
+        assert_eq!(
+            app.last_managed_listener_creation_time.as_deref(),
+            Some("listener-created")
+        );
     }
 }

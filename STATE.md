@@ -6,7 +6,7 @@ Last updated: 2026-09-11
 
 Port Lens v0.3.0 preview is a Tauri/Rust + React/TypeScript desktop app for discovering TCP listeners and managing selected local services.
 
-Latest validated implementation commit before these state docs: `300974e` (`fix: preserve managed app identity and Windows quoting`).
+Current merged baseline: `249d111` (PR #2, compact-position polish).
 
 Validated on GitHub CI:
 - macOS: PASS
@@ -44,11 +44,11 @@ For safety, Stop / Restart ownership is still session-local. A previously manage
 
 Compact mode is enabled by default. Minimize enters the floating compact monitor; disabling Compact mode makes Minimize hide to tray. Close exits the application.
 
-Current Port Lens compact positioning clamps to the monitor work area with a forced 12 px edge margin. On Windows this leaves a visible gap above the taskbar. Token Lens uses a different Windows policy; Port Lens will be polished separately rather than changing this baseline during the stability merge.
+Compact positioning clamps to the monitor work area. Windows now uses a 0 px edge margin so the bubble can sit directly against the work-area/taskbar boundary without covering the taskbar. Non-Windows desktop builds retain the existing 12 px edge margin.
 
 ## Windows package evidence
 
-Latest Windows Bundle run: `34573936844`.
+Latest merged-feature Windows package evidence: compact-position bundle run `34578926043` (PASS).
 
 - Portable: `Port.Lens_0.3.0_x64-portable.exe`
   - SHA-256 `6b1a42e245f7a05da5657f32135140c3302a63a73bea90700ae34c1e5d3e8428`

@@ -18,11 +18,16 @@ export interface ManagedApp {
   lastManagedPid?: number;
   lastManagedProcessName?: string;
   lastManagedCommandLine?: string;
+  lastManagedListenerCreationTime?: string;
+  lastManagedRootPid?: number;
+  lastManagedRootCreationTime?: string;
+  lastManagedRootCommandLine?: string;
 }
 
 export interface ManagedRuntime {
   appId: string;
   rootPid: number;
+  reattached?: boolean;
 }
 
 export interface ManagedExitInfo {
