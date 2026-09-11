@@ -1,9 +1,8 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  collapseToBubble,
   expandFromBubble,
   getBubbleState,
   getListeners,
@@ -12,6 +11,8 @@ import {
   getManagedApps,
   getManagedRuntimes,
   killListenerProcess,
+  minimizeMainWindow,
+  moveCompactBubble,
   openLogs,
   removeManagedApp,
   restartManagedApp,
@@ -30,20 +31,22 @@ type ManagedRow = ManagedApp & {
   status: ManagedStatus;
   runtime?: ManagedRuntime;
   listener?: ListenerInfo;
+  launchConfigured: boolean;
+  identityChanged: boolean;
 };
 
 const createDraft = (): ManagedApp => ({
   id: crypto.randomUUID(),
   name: "",
   port: 3000,
-  command: "npm run dev",
+  command: "",
   cwd: "",
 });
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: "system",
   bubbleScale: 1,
-  monitoredPorts: [],
+  compactModeEnabled: true,
 };
 
 function messageOf(error: unknown) {
@@ -122,6 +125,14 @@ function App() {
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
   const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
   const monitoredRefreshInFlight = useRef<Promise<void> | null>(null);
+  const bubbleDrag = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    offsetRatioX: number;
+    offsetRatioY: number;
+    moved: boolean;
+  } | null>(null);
   const uiLanguage = resolveLanguage(settings.language);
 
   const refreshInventory = useCallback((silent = false) => {
@@ -246,21 +257,33 @@ function App() {
   const managedRows = useMemo<ManagedRow[]>(() => {
     const runtimeByApp = new Map(runtimes.map((runtime) => [runtime.appId, runtime]));
     const listenerByPort = new Map<number, ListenerInfo>();
-    for (const listener of listeners) {
+    for (const listener of monitoredListeners) {
       if (!listenerByPort.has(listener.port)) listenerByPort.set(listener.port, listener);
     }
 
     return apps.map((app) => {
       const runtime = runtimeByApp.get(app.id);
       const listener = listenerByPort.get(app.port);
-      const status: ManagedStatus = runtime ? "running" : listener ? "occupied" : "stopped";
-      return { ...app, runtime, listener, status };
+      const launchConfigured = Boolean(app.command?.trim() && app.cwd?.trim());
+      const processChanged = Boolean(
+        listener && app.lastProcessName && listener.processName !== app.lastProcessName,
+      );
+      const commandChanged = Boolean(
+        listener?.commandLine && app.lastCommandLine && listener.commandLine !== app.lastCommandLine,
+      );
+      const identityChanged = !runtime && (processChanged || commandChanged);
+      const status: ManagedStatus = runtime
+        ? listener ? "running" : "starting"
+        : identityChanged
+          ? "changed"
+          : listener ? "online" : "offline";
+      return { ...app, runtime, listener, launchConfigured, identityChanged, status };
     });
-  }, [apps, listeners, runtimes]);
+  }, [apps, monitoredListeners, runtimes]);
 
   const presentationFor = useCallback((listener: ListenerInfo) => {
     const managed = managedRows.find(
-      (app) => app.status === "running" && app.port === listener.port && app.listener?.pid === listener.pid,
+      (app) => !app.identityChanged && app.port === listener.port && app.listener?.pid === listener.pid,
     );
     if (managed) return { primary: managed.name, secondary: listener.processName, kind: "managed" as const };
 
@@ -270,14 +293,6 @@ function App() {
     }
     return { primary: listener.processName, secondary: undefined, kind: "process" as const };
   }, [managedRows]);
-
-  const monitoredRows = useMemo(() => {
-    const byPort = new Map<number, ListenerInfo>();
-    for (const listener of monitoredListeners) {
-      if (!byPort.has(listener.port)) byPort.set(listener.port, listener);
-    }
-    return settings.monitoredPorts.map((port) => ({ port, listener: byPort.get(port) }));
-  }, [monitoredListeners, settings.monitoredPorts]);
 
   const filteredListeners = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -296,8 +311,8 @@ function App() {
     });
   }, [listeners, presentationFor, query]);
 
-  const runningCount = managedRows.filter((row) => row.status === "running").length;
-  const monitoredOnlineCount = monitoredRows.filter((row) => row.listener).length;
+  const runningCount = managedRows.filter((row) => row.status === "running" || row.status === "starting").length;
+  const onlineAppCount = managedRows.filter((row) => row.listener).length;
 
   const savePreferences = async (patch: Partial<AppSettings>) => {
     try {
@@ -305,26 +320,6 @@ function App() {
       setSettings(next);
     } catch (settingsError) {
       setError(messageOf(settingsError));
-    }
-  };
-
-  const toggleMonitoring = async (port: number) => {
-    const monitored = settings.monitoredPorts.includes(port);
-    const monitoredPorts = monitored
-      ? settings.monitoredPorts.filter((item) => item !== port)
-      : [...settings.monitoredPorts, port];
-    setBusy(`monitor:${port}`);
-    setError(null);
-    try {
-      const hadRefreshInFlight = monitoredRefreshInFlight.current !== null;
-      const next = await updateSettings({ monitoredPorts });
-      setSettings(next);
-      await refreshMonitored();
-      if (hadRefreshInFlight) await refreshMonitored();
-    } catch (settingsError) {
-      setError(messageOf(settingsError));
-    } finally {
-      setBusy(null);
     }
   };
 
@@ -336,9 +331,9 @@ function App() {
     }
   };
 
-  const collapseBubble = async () => {
+  const minimizeWindow = async () => {
     try {
-      const state = await collapseToBubble();
+      const state = await minimizeMainWindow();
       setBubbleMode(state.collapsed);
     } catch (bubbleError) {
       setError(messageOf(bubbleError));
@@ -354,10 +349,60 @@ function App() {
     }
   };
 
-  const dragBubble = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0 || isDevMockMode) return;
+  const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as Element).closest("button")) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    bubbleDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startY: event.screenY,
+      offsetRatioX: Math.max(0, Math.min(1, (event.clientX - rect.left) / (rect.width || 1))),
+      offsetRatioY: Math.max(0, Math.min(1, (event.clientY - rect.top) / (rect.height || 1))),
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
-    void getCurrentWindow().startDragging();
+  };
+
+  const moveBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved && Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
+    drag.moved = true;
+    event.currentTarget.classList.add("dragging");
+    void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
+      .then((state) => setBubbleMode(state.collapsed))
+      .catch((bubbleError) => setError(messageOf(bubbleError)));
+    event.preventDefault();
+  };
+
+  const finishBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    bubbleDrag.current = null;
+    event.currentTarget.classList.remove("dragging");
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    if (drag.moved) {
+      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
+        .then((state) => setBubbleMode(state.collapsed))
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    } else {
+      void expandBubble();
+    }
+    event.preventDefault();
+  };
+
+  const cancelBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    bubbleDrag.current = null;
+    event.currentTarget.classList.remove("dragging");
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    if (drag.moved) {
+      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
+        .then((state) => setBubbleMode(state.collapsed))
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    }
   };
 
   const perform = async (key: string, action: () => Promise<unknown>) => {
@@ -373,11 +418,46 @@ function App() {
     }
   };
 
+  const registerListener = async (listener: ListenerInfo) => {
+    const presentation = presentationFor(listener);
+    const app: ManagedApp = {
+      id: crypto.randomUUID(),
+      name: presentation.primary || `${listener.processName} :${listener.port}`,
+      port: listener.port,
+      lastProcessName: listener.processName,
+      lastCommandLine: listener.commandLine,
+    };
+    await perform(`register:${listener.port}`, () => saveManagedApp(app));
+  };
+
+  const browseWorkingDirectory = async () => {
+    if (!draft) return;
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: draft.cwd || undefined,
+        title: t(uiLanguage, "selectWorkingDirectory"),
+      });
+      if (typeof selected === "string") {
+        setDraft((current) => current ? { ...current, cwd: selected } : current);
+      }
+    } catch (dialogError) {
+      setError(messageOf(dialogError));
+    }
+  };
+
   const saveDraft = async (event: FormEvent) => {
     event.preventDefault();
     if (!draft) return;
+    const command = draft.command?.trim() ?? "";
+    const cwd = draft.cwd?.trim() ?? "";
+    if (Boolean(command) !== Boolean(cwd)) {
+      setError("Start command and working directory must be configured together.");
+      return;
+    }
     await perform(`save:${draft.id}`, async () => {
-      await saveManagedApp(draft);
+      await saveManagedApp({ ...draft, command: command || undefined, cwd: cwd || undefined });
       setDraft(null);
     });
   };
@@ -396,18 +476,26 @@ function App() {
 
   if (bubbleMode) {
     return (
-      <main className="bubble-shell" aria-label="Port Lens compact monitor">
-        <button className="bubble-grip" onPointerDown={dragBubble} aria-label="Drag Port Lens" title="Drag">
-          <img src="/port-lens.svg" alt="" aria-hidden="true" />
-        </button>
-        <button className="bubble-summary" onClick={() => void expandBubble()} title="Open Port Lens">
-          <span className={`status-dot ${runningCount > 0 ? "running" : "stopped"}`} />
-          <strong>{runningCount}/{apps.length}</strong>
+      <main
+        className="bubble-shell"
+        aria-label="Port Lens compact monitor"
+        title="Drag to move · Click to open"
+        onPointerDown={beginBubbleDrag}
+        onPointerMove={moveBubbleDrag}
+        onPointerUp={finishBubbleDrag}
+        onPointerCancel={cancelBubbleDrag}
+      >
+        <div className="bubble-grip" aria-hidden="true">
+          <img src="/port-lens.svg" alt="" />
+        </div>
+        <div className="bubble-summary">
+          <span className={`status-dot ${onlineAppCount > 0 ? "running" : "stopped"}`} />
+          <strong>{onlineAppCount}/{apps.length}</strong>
           <span>apps</span>
           <span className="bubble-divider" />
           <strong>{listeners.length}</strong>
           <span>ports</span>
-        </button>
+        </div>
         <button className="bubble-expand" onClick={() => void expandBubble()} aria-label="Expand Port Lens" title="Expand">
           Open
         </button>
@@ -432,9 +520,9 @@ function App() {
             {runningCount} running
           </div>
           <div className="summary-pill">{listeners.length} listeners</div>
-          <div className="summary-pill">{monitoredOnlineCount}/{settings.monitoredPorts.length} monitored</div>
-          <button className="secondary-button" onClick={() => void collapseBubble()}>
-            Compact
+          <div className="summary-pill">{onlineAppCount}/{apps.length} apps online</div>
+          <button className="secondary-button" onClick={() => void minimizeWindow()}>
+            Minimize
           </button>
           <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
             Settings
@@ -455,7 +543,7 @@ function App() {
       <section className="panel managed-panel">
         <div className="section-header">
           <div>
-            <h2>Managed apps</h2>
+            <h2>Apps</h2>
             <p>{t(uiLanguage, "managedDescription")}</p>
           </div>
           <button className="primary-button" onClick={() => setDraft(createDraft())}>
@@ -464,17 +552,25 @@ function App() {
         </div>
 
         {managedRows.length === 0 ? (
-          <button className="empty-state" onClick={() => setDraft(createDraft())}>
+          <div className="monitor-empty">
             <strong>{t(uiLanguage, "emptyTitle")}</strong>
             <span>{t(uiLanguage, "emptyDescription")}</span>
-          </button>
+          </div>
         ) : (
           <div className="managed-grid">
             {managedRows.map((app) => {
               const appBusy = busy?.includes(app.id) ?? false;
               const stateLabel = app.status === "running"
-                ? app.listener ? "Running" : "Starting"
-                : app.status === "occupied" ? "Port occupied" : "Stopped";
+                ? "Running"
+                : app.status === "starting"
+                  ? "Starting"
+                  : app.status === "online"
+                    ? "Online"
+                    : app.status === "changed"
+                      ? "Different process"
+                      : "Offline";
+              const canStart = app.launchConfigured && app.status === "offline" && !app.runtime;
+              const canRestart = app.launchConfigured && Boolean(app.runtime);
               return (
                 <article className={`managed-card ${app.status}`} key={app.id}>
                   <div className="managed-card-head">
@@ -485,28 +581,38 @@ function App() {
                       </div>
                       <span className={`status-label ${app.status}`}>{stateLabel}</span>
                     </div>
-                    <button className="icon-button" aria-label={`Edit ${app.name}`} onClick={() => setDraft({ ...app })}>
+                    <button
+                      className="icon-button"
+                      aria-label={`Edit ${app.name}`}
+                      disabled={Boolean(app.runtime)}
+                      title={app.runtime ? "Stop this App before editing its launch settings" : "Edit App"}
+                      onClick={() => setDraft({ ...app })}
+                    >
                       Edit
                     </button>
                   </div>
                   <div className="app-meta">
                     <div><span>Port</span><strong>{app.port}</strong></div>
-                    <div><span>Process</span><strong>{app.listener?.processName ?? "—"}</strong></div>
+                    <div><span>Process</span><strong>{app.listener?.processName ?? app.lastProcessName ?? "—"}</strong></div>
                     <div><span>PID</span><strong>{app.listener?.pid ?? app.runtime?.rootPid ?? "—"}</strong></div>
                   </div>
-                  <div className="command-line" title={app.command}>{app.command}</div>
-                  <div className="cwd-line" title={app.cwd}>{app.cwd}</div>
+                  {app.launchConfigured ? (
+                    <>
+                      <div className="command-line" title={app.command}>{app.command}</div>
+                      <div className="cwd-line" title={app.cwd}>{app.cwd}</div>
+                    </>
+                  ) : (
+                    <div className="launch-note">{t(uiLanguage, "monitoringOnlyNote")}</div>
+                  )}
 
-                  {app.status === "occupied" && app.listener && (
-                    <div className="conflict-note">
-                      {t(uiLanguage, "conflict", { port: app.port, process: app.listener.processName, pid: app.listener.pid })}
-                    </div>
+                  {app.identityChanged && app.listener && (
+                    <div className="conflict-note">{t(uiLanguage, "differentProcessWarning")}</div>
                   )}
 
                   <div className="card-actions">
-                    {app.status === "running" ? (
+                    {app.runtime ? (
                       <>
-                        <button disabled={appBusy} onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id))}>
+                        <button disabled={appBusy || !canRestart} onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id))}>
                           Restart
                         </button>
                         <button className="danger-soft" disabled={appBusy} onClick={() => void perform(`stop:${app.id}`, () => stopManagedApp(app.id))}>
@@ -514,62 +620,25 @@ function App() {
                         </button>
                       </>
                     ) : (
-                      <button className="primary-button" disabled={appBusy || app.status === "occupied"} onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id))}>
+                      <button
+                        className="primary-button"
+                        disabled={appBusy || !canStart}
+                        title={!app.launchConfigured ? "Configure launch settings in Edit" : app.listener ? "Port is already online" : "Start app"}
+                        onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id))}
+                      >
                         Start
                       </button>
                     )}
                     <button disabled={!app.listener} onClick={() => void openUrl(`http://localhost:${app.port}`)}>
                       Open
                     </button>
-                    <button className="ghost-button" disabled={app.status === "running"} onClick={() => void deleteApp(app)}>
+                    <button className="ghost-button" disabled={Boolean(app.runtime)} onClick={() => void deleteApp(app)}>
                       Remove
                     </button>
                   </div>
                 </article>
               );
             })}
-          </div>
-        )}
-      </section>
-
-      <section className="panel monitored-panel">
-        <div className="section-header">
-          <div>
-            <h2>Monitored Ports</h2>
-            <p>{t(uiLanguage, "monitoredDescription")}</p>
-          </div>
-          <div className="summary-pill">{monitoredOnlineCount}/{settings.monitoredPorts.length} online</div>
-        </div>
-        {monitoredRows.length === 0 ? (
-          <div className="monitor-empty">
-            <strong>{t(uiLanguage, "monitoredEmptyTitle")}</strong>
-            <span>{t(uiLanguage, "monitoredEmptyDescription")}</span>
-          </div>
-        ) : (
-          <div className="table-wrap monitored-table-wrap">
-            <table>
-              <thead><tr><th>Port</th><th>Status</th><th>App / Process</th><th>PID</th><th className="action-column">Action</th></tr></thead>
-              <tbody>
-                {monitoredRows.map(({ port, listener }) => {
-                  const presentation = listener ? presentationFor(listener) : undefined;
-                  return (
-                    <tr key={`monitored-${port}`}>
-                      <td><span className="port-chip">:{port}</span></td>
-                      <td><span className={`monitor-status ${listener ? "online" : "offline"}`}>{listener ? "Online" : "Offline"}</span></td>
-                      <td className="process-cell" title={listener?.commandLine ?? listener?.processName ?? "Offline"}>
-                        <span className="process-primary">{presentation?.primary ?? "—"}</span>
-                        {presentation?.secondary && <span className="process-secondary">{presentation.secondary}</span>}
-                      </td>
-                      <td className="mono-cell">{listener?.pid ?? "—"}</td>
-                      <td className="action-column"><div className="action-group">
-                        <button disabled={!listener} onClick={() => void openUrl(`http://localhost:${port}`)}>Open</button>
-                        <button className="ghost-button" disabled={busy === `monitor:${port}`} onClick={() => void toggleMonitoring(port)}>Unmonitor</button>
-                      </div></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
           </div>
         )}
       </section>
@@ -605,10 +674,10 @@ function App() {
             <tbody>
               {filteredListeners.map((listener) => {
                 const presentation = presentationFor(listener);
-                const managedListener = managedRows.some(
-                  (app) => app.status === "running" && app.port === listener.port,
+                const registered = apps.some((app) => app.port === listener.port);
+                const portLensRuntime = managedRows.some(
+                  (app) => Boolean(app.runtime) && app.port === listener.port,
                 );
-                const monitored = settings.monitoredPorts.includes(listener.port);
                 return (
                   <tr key={`${listener.protocol}-${listener.localAddress}-${listener.port}-${listener.pid}`}>
                     <td><span className="port-chip">:{listener.port}</span></td>
@@ -623,16 +692,16 @@ function App() {
                     <td><span className="protocol-chip">{listener.protocol}</span></td>
                     <td className="action-column"><div className="action-group">
                       <button
-                        className={monitored ? "monitor-button active" : "monitor-button"}
-                        disabled={busy === `monitor:${listener.port}`}
-                        onClick={() => void toggleMonitoring(listener.port)}
+                        className={registered ? "monitor-button active" : "monitor-button"}
+                        disabled={registered || busy === `register:${listener.port}`}
+                        onClick={() => void registerListener(listener)}
                       >
-                        {monitored ? "Unmonitor" : "Monitor"}
+                        {registered ? "Registered" : "Register"}
                       </button>
                       <button
                         className="danger-link"
-                        disabled={managedListener || busy === `kill:${listener.pid}`}
-                        title={managedListener ? "Use the managed app Stop action" : "Terminate this process"}
+                        disabled={portLensRuntime || busy === `kill:${listener.pid}`}
+                        title={portLensRuntime ? "Use the App Stop action" : "Terminate this process"}
                         onClick={() => setKillTarget(listener)}
                       >
                         Kill
@@ -656,7 +725,7 @@ function App() {
           <form className="modal-card app-editor" onSubmit={saveDraft} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <span className="eyebrow">MANAGED APP</span>
+                <span className="eyebrow">APP</span>
                 <h2>{apps.some((app) => app.id === draft.id) ? "Edit app" : "Add app"}</h2>
               </div>
               <button type="button" className="icon-button" onClick={() => setDraft(null)}>Close</button>
@@ -684,23 +753,24 @@ function App() {
                 />
               </label>
               <label className="grow-label">
-                <span>Start command</span>
+                <span>Start command <em>optional</em></span>
                 <input
-                  required
-                  value={draft.command}
+                  value={draft.command ?? ""}
                   onChange={(event) => setDraft({ ...draft, command: event.currentTarget.value })}
                   placeholder="npm run dev"
                 />
               </label>
             </div>
             <label>
-              <span>Working directory</span>
-              <input
-                required
-                value={draft.cwd}
-                onChange={(event) => setDraft({ ...draft, cwd: event.currentTarget.value })}
-                placeholder="C:\\0.Coding\\my-project"
-              />
+              <span>Working directory <em>optional</em></span>
+              <div className="directory-field">
+                <input
+                  value={draft.cwd ?? ""}
+                  onChange={(event) => setDraft({ ...draft, cwd: event.currentTarget.value })}
+                  placeholder="C:\\0.Coding\\my-project"
+                />
+                <button type="button" onClick={() => void browseWorkingDirectory()}>Browse…</button>
+              </div>
             </label>
             <p className="form-help">{t(uiLanguage, "formHelp")}</p>
             <div className="modal-actions">

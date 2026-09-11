@@ -70,6 +70,18 @@ export const collapseToBubble = () =>
     ? Promise.resolve<BubbleState>({ collapsed: true })
     : invoke<BubbleState>("collapse_to_bubble");
 
+export const minimizeMainWindow = () =>
+  isDevMockMode
+    ? Promise.resolve<BubbleState>({ collapsed: true })
+    : invoke<BubbleState>("minimize_main_window");
+
+export const moveCompactBubble = (offsetRatioX: number, offsetRatioY: number, persist = false) =>
+  isDevMockMode
+    ? Promise.resolve(mockBubbleState())
+    : invoke<BubbleState>("move_compact_bubble", {
+        offset: { offsetRatioX, offsetRatioY, persist },
+      });
+
 export const expandFromBubble = () =>
   isDevMockMode
     ? Promise.resolve<BubbleState>({ collapsed: false })

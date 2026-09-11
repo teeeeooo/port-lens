@@ -11,8 +11,10 @@ export interface ManagedApp {
   id: string;
   name: string;
   port: number;
-  command: string;
-  cwd: string;
+  command?: string;
+  cwd?: string;
+  lastProcessName?: string;
+  lastCommandLine?: string;
 }
 
 export interface ManagedRuntime {
@@ -27,13 +29,13 @@ export interface BubbleState {
 export interface AppSettings {
   language: "system" | "en" | "ko";
   bubbleScale: number;
-  monitoredPorts: number[];
+  compactModeEnabled: boolean;
 }
 
 export interface SettingsPatch {
   language?: AppSettings["language"];
   bubbleScale?: number;
-  monitoredPorts?: number[];
+  compactModeEnabled?: boolean;
 }
 
-export type ManagedStatus = "running" | "occupied" | "stopped";
+export type ManagedStatus = "running" | "starting" | "online" | "changed" | "offline";

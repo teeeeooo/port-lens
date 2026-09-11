@@ -46,6 +46,21 @@ export default function SettingsModal({ settings, language, onChange, onOpenLogs
           </select>
         </div>
 
+        <div className="settings-row">
+          <div>
+            <strong>Compact mode</strong>
+            <p>{t(language, "compactModeDescription")}</p>
+          </div>
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={settings.compactModeEnabled}
+              onChange={(event) => void onChange({ compactModeEnabled: event.currentTarget.checked })}
+            />
+            <span>{settings.compactModeEnabled ? "On" : "Off"}</span>
+          </label>
+        </div>
+
         <div className="settings-row settings-slider-row">
           <div>
             <strong>Bubble size</strong>
@@ -58,6 +73,7 @@ export default function SettingsModal({ settings, language, onChange, onOpenLogs
               max="150"
               step="10"
               value={bubblePercent}
+              disabled={!settings.compactModeEnabled}
               onChange={(event) => setBubblePercent(Number(event.currentTarget.value))}
               onPointerUp={(event) => commitBubbleSize(Number(event.currentTarget.value))}
               onKeyUp={(event) => commitBubbleSize(Number(event.currentTarget.value))}

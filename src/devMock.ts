@@ -52,6 +52,7 @@ export async function mockStartApp(appId: string) {
   const state = await loadState();
   const app = state.apps.find((item) => item.id === appId);
   if (!app) throw new Error("Mock managed app not found");
+  if (!app.command || !app.cwd) throw new Error("Configure a start command and working directory before starting this App.");
   const runtime = { appId, rootPid: 40000 + state.runtimes.length + 1 };
   state.runtimes = state.runtimes.filter((item) => item.appId !== appId);
   state.runtimes.push(runtime);
@@ -88,7 +89,7 @@ export async function mockKillListener(pid: number, port: number) {
 let mockSettings: AppSettings = {
   language: new URLSearchParams(window.location.search).get("lang") === "ko" ? "ko" : "en",
   bubbleScale: Number(new URLSearchParams(window.location.search).get("bubbleScale") ?? "1") || 1,
-  monitoredPorts: [3000, 3101, 8000, 9999],
+  compactModeEnabled: true,
 };
 
 export async function mockGetSettings() {
@@ -103,7 +104,7 @@ export async function mockUpdateSettings(patch: SettingsPatch) {
 
 export async function mockGetMonitoredListeners() {
   const state = await loadState();
-  const watched = new Set(mockSettings.monitoredPorts);
+  const watched = new Set(state.apps.map((app) => app.port));
   return clone(state.listeners.filter((listener) => watched.has(listener.port)));
 }
 

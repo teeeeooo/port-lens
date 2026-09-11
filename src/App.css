@@ -49,7 +49,13 @@ html.bubble-mode #root {
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: #101828;
   color: #f8fafc;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
+
+.bubble-shell.dragging { cursor: grabbing; }
+.bubble-shell button { cursor: pointer; }
 
 .bubble-shell button {
   min-height: calc(34px * var(--bubble-scale));
@@ -164,9 +170,10 @@ html.bubble-mode #root {
   display: inline-block;
   background: #9aa3b2;
 }
-.status-dot.running { background: var(--success); }
-.status-dot.occupied { background: var(--warning); }
-.status-dot.stopped { background: #98a2b3; }
+.status-dot.running, .status-dot.online { background: var(--success); }
+.status-dot.starting { background: var(--accent); }
+.status-dot.changed { background: var(--warning); }
+.status-dot.offline, .status-dot.stopped { background: #98a2b3; }
 
 .panel {
   background: var(--panel);
@@ -247,8 +254,10 @@ button:hover:not(:disabled) { background: var(--panel-soft); }
   border-radius: 11px;
   background: var(--panel);
 }
-.managed-card.running { border-left-color: var(--success); }
-.managed-card.occupied { border-left-color: var(--warning); }
+.managed-card.running, .managed-card.online { border-left-color: var(--success); }
+.managed-card.starting { border-left-color: var(--accent); }
+.managed-card.changed { border-left-color: var(--warning); }
+.managed-card.offline { border-left-color: #98a2b3; }
 
 .managed-card-head, .app-title-row, .card-actions {
   display: flex;
@@ -278,6 +287,14 @@ button:hover:not(:disabled) { background: var(--panel-soft); }
 }
 .command-line { color: var(--text); }
 .cwd-line { margin-top: 4px; color: var(--muted); }
+.launch-note {
+  padding: 8px 9px;
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
 
 .conflict-note {
   margin-top: 10px;
@@ -405,9 +422,13 @@ tbody tr:hover { background: var(--panel-soft); }
 }
 .modal-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 18px; }
 .modal-card label { display: block; margin-bottom: 13px; }
+.modal-card label > span em { margin-left: 4px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 500; }
 .form-row { display: flex; gap: 10px; }
 .form-row > label:first-child { width: 120px; flex: 0 0 120px; }
 .grow-label { flex: 1; }
+.directory-field { display: flex; gap: 8px; align-items: center; }
+.directory-field input { flex: 1; min-width: 0; }
+.directory-field button { flex: 0 0 auto; }
 .form-help { margin: 2px 0 16px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
@@ -424,6 +445,9 @@ tbody tr:hover { background: var(--panel-soft); }
 .settings-row strong { display: block; margin-bottom: 4px; font-size: 13px; }
 .settings-row p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .settings-row select { width: 100%; min-height: 36px; }
+.settings-toggle { display: flex !important; align-items: center; justify-content: flex-end; gap: 9px; margin: 0 !important; }
+.settings-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.settings-toggle span { min-width: 24px; color: var(--text) !important; font-size: 12px !important; font-weight: 700 !important; }
 .settings-slider-control { display: grid; grid-template-columns: 1fr 48px; gap: 10px; align-items: center; }
 .settings-slider-control input { width: 100%; margin: 0; }
 .settings-slider-control output { color: var(--text); font-size: 12px; font-weight: 700; text-align: right; }

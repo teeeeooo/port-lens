@@ -76,8 +76,10 @@ mod tests {
             id: "api".into(),
             name: "API".into(),
             port: 3101,
-            command: "npm run dev".into(),
-            cwd: "/tmp".into(),
+            command: Some("npm run dev".into()),
+            cwd: Some("/tmp".into()),
+            last_process_name: Some("node".into()),
+            last_command_line: None,
         };
 
         state.persist_apps(std::slice::from_ref(&app)).unwrap();

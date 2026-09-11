@@ -5,6 +5,7 @@ mod ports;
 mod process_control;
 mod registry;
 mod settings;
+mod window_state;
 
 use diagnostics::Diagnostics;
 use models::{ListenerInfo, ManagedApp, ManagedRuntime};
@@ -19,6 +20,20 @@ use tauri::{Emitter, Manager, State, WebviewWindow, WindowEvent};
 
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MinimizeTarget {
+    Compact,
+    Tray,
+}
+
+fn minimize_target(settings: &AppSettings) -> MinimizeTarget {
+    if settings.compact_mode_enabled {
+        MinimizeTarget::Compact
+    } else {
+        MinimizeTarget::Tray
+    }
+}
 
 async fn run_listener_scan(
     kind: &'static str,
@@ -68,11 +83,39 @@ async fn get_listeners(diagnostics: State<'_, Diagnostics>) -> Result<Vec<Listen
 
 #[tauri::command]
 async fn get_monitored_listeners(
-    store: State<'_, SettingsStore>,
+    state: State<'_, AppState>,
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<Vec<ListenerInfo>, String> {
-    let ports = store.get()?.monitored_ports;
-    run_listener_scan("monitored", ports, diagnostics.inner().clone()).await
+    let ports = state
+        .apps
+        .lock()
+        .map_err(|_| "App registry lock is poisoned.".to_string())?
+        .iter()
+        .map(|app| app.port)
+        .collect::<Vec<_>>();
+    let listeners = run_listener_scan("monitored", ports, diagnostics.inner().clone()).await?;
+
+    let mut apps = state
+        .apps
+        .lock()
+        .map_err(|_| "App registry lock is poisoned.".to_string())?;
+    let mut changed = false;
+    for app in apps.iter_mut() {
+        if let Some(listener) = listeners.iter().find(|listener| listener.port == app.port) {
+            if app.last_process_name.is_none() {
+                app.last_process_name = Some(listener.process_name.clone());
+                changed = true;
+            }
+            if app.last_command_line.is_none() && listener.command_line.is_some() {
+                app.last_command_line = listener.command_line.clone();
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        state.persist_apps(&apps)?;
+    }
+    Ok(listeners)
 }
 
 #[tauri::command]
@@ -101,15 +144,26 @@ fn get_managed_runtimes(state: State<'_, AppState>) -> Result<Vec<ManagedRuntime
         .collect())
 }
 
+fn normalize_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 #[tauri::command]
 fn save_managed_app(mut app: ManagedApp, state: State<'_, AppState>) -> Result<ManagedApp, String> {
     app.id = app.id.trim().to_string();
     app.name = app.name.trim().to_string();
-    app.command = app.command.trim().to_string();
-    app.cwd = app.cwd.trim().to_string();
+    app.command = normalize_optional(app.command);
+    app.cwd = normalize_optional(app.cwd);
+    app.last_process_name = normalize_optional(app.last_process_name);
+    app.last_command_line = normalize_optional(app.last_command_line);
 
-    if app.id.is_empty() || app.name.is_empty() || app.command.is_empty() || app.cwd.is_empty() {
-        return Err("Name, command, and working directory are required.".into());
+    if app.id.is_empty() || app.name.is_empty() {
+        return Err("Name is required.".into());
+    }
+    if app.command.is_some() != app.cwd.is_some() {
+        return Err("Start command and working directory must be configured together.".into());
     }
 
     if state
@@ -125,6 +179,15 @@ fn save_managed_app(mut app: ManagedApp, state: State<'_, AppState>) -> Result<M
         .apps
         .lock()
         .map_err(|_| "App registry lock is poisoned.".to_string())?;
+    if apps
+        .iter()
+        .any(|item| item.id != app.id && item.port == app.port)
+    {
+        return Err(format!(
+            "Port {} is already registered as an App.",
+            app.port
+        ));
+    }
 
     if let Some(existing) = apps.iter_mut().find(|item| item.id == app.id) {
         *existing = app.clone();
@@ -154,7 +217,7 @@ fn remove_managed_app(app_id: String, state: State<'_, AppState>) -> Result<(), 
     let previous_len = apps.len();
     apps.retain(|item| item.id != app_id);
     if apps.len() == previous_len {
-        return Err("Managed app was not found.".into());
+        return Err("App was not found.".into());
     }
     state.persist_apps(&apps)
 }
@@ -187,7 +250,10 @@ async fn start_by_id(
         .iter()
         .find(|item| item.id == app_id)
         .cloned()
-        .ok_or_else(|| "Managed app was not found.".to_string())?;
+        .ok_or_else(|| "App was not found.".to_string())?;
+    let (command, cwd) = app.launch_config().ok_or_else(|| {
+        "Configure a start command and working directory before starting this App.".to_string()
+    })?;
 
     if let Some(blocker) = run_listener_scan("targeted", vec![app.port], diagnostics)
         .await?
@@ -200,7 +266,7 @@ async fn start_by_id(
         ));
     }
 
-    let pid = spawn_managed(&app.command, &app.cwd)?;
+    let pid = spawn_managed(command, cwd)?;
     state
         .runtime_pids
         .lock()
@@ -325,9 +391,7 @@ async fn kill_listener_process(
             .lock()
             .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
         if runtimes.values().any(|managed| *managed == pid) {
-            return Err(
-                "Use the managed app Stop action for processes started by Port Lens.".into(),
-            );
+            return Err("Use the App Stop action for processes started by Port Lens.".into());
         }
 
         let managed_ports = state
@@ -350,8 +414,7 @@ async fn kill_listener_process(
             .any(|target| managed_ports.contains(target))
         {
             return Err(
-                "This process owns a port assigned to a running managed app. Use Stop instead."
-                    .into(),
+                "This process owns a Port assigned to a running App. Use Stop instead.".into(),
             );
         }
 
@@ -393,8 +456,17 @@ fn update_settings(
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<AppSettings, String> {
     let result = (|| {
+        let previous = store.get()?;
         let settings = store.update(patch)?;
-        bubble::resize_collapsed(&window, &controller, settings.bubble_scale)?;
+        if previous.compact_mode_enabled
+            && !settings.compact_mode_enabled
+            && bubble::is_collapsed(&controller)?
+        {
+            let payload = bubble::expand(&window, &controller, true)?;
+            emit_bubble_state(&window, payload);
+        } else {
+            bubble::resize_collapsed(&window, &controller, &store)?;
+        }
         Ok(settings)
     })();
     record_failure(&diagnostics, "settings_write", "update", &result);
@@ -412,16 +484,51 @@ fn get_bubble_state(
     bubble::current(&controller)
 }
 
+fn collapse_window(
+    window: &WebviewWindow,
+    controller: &bubble::BubbleController,
+    settings: &SettingsStore,
+) -> Result<bubble::BubblePayload, String> {
+    window_state::persist_now(window)?;
+    let payload = bubble::collapse(window, controller, settings)?;
+    emit_bubble_state(window, payload);
+    Ok(payload)
+}
+
 #[tauri::command]
 fn collapse_to_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
     settings: State<'_, SettingsStore>,
 ) -> Result<bubble::BubblePayload, String> {
-    let bubble_scale = settings.get()?.bubble_scale;
-    let payload = bubble::collapse(&window, &controller, bubble_scale)?;
-    emit_bubble_state(&window, payload);
-    Ok(payload)
+    collapse_window(&window, &controller, &settings)
+}
+
+#[tauri::command]
+fn minimize_main_window(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+    settings: State<'_, SettingsStore>,
+) -> Result<bubble::BubblePayload, String> {
+    match minimize_target(&settings.get()?) {
+        MinimizeTarget::Compact => collapse_window(&window, &controller, &settings),
+        MinimizeTarget::Tray => {
+            window
+                .hide()
+                .map_err(|error| format!("Failed to hide Port Lens window: {error}"))?;
+            bubble::current(&controller)
+        }
+    }
+}
+
+#[tauri::command]
+fn move_compact_bubble(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+    settings: State<'_, SettingsStore>,
+    offset: bubble::BubbleDragOffset,
+) -> Result<bubble::BubblePayload, String> {
+    bubble::move_to_cursor(&window, &controller, &settings, offset)
 }
 
 #[tauri::command]
@@ -450,6 +557,7 @@ pub fn run() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -471,12 +579,46 @@ pub fn run() {
                 ),
             );
             app.manage(diagnostics.clone());
-            app.manage(AppState::load(
-                config_dir.join("managed-apps.json"),
-                diagnostics.clone(),
-            ));
-            app.manage(SettingsStore::load(config_dir, diagnostics)?);
+            let app_state =
+                AppState::load(config_dir.join("managed-apps.json"), diagnostics.clone());
+            let settings_store = SettingsStore::load(config_dir, diagnostics)?;
+            let legacy_ports = settings_store.legacy_monitored_ports()?;
+            if !legacy_ports.is_empty() {
+                let mut apps = app_state
+                    .apps
+                    .lock()
+                    .map_err(|_| "App registry lock is poisoned.".to_string())?;
+                let mut changed = false;
+                for port in legacy_ports {
+                    if apps.iter().any(|app| app.port == port) {
+                        continue;
+                    }
+                    apps.push(ManagedApp {
+                        id: format!("legacy-monitor-{port}"),
+                        name: format!("Port {port}"),
+                        port,
+                        command: None,
+                        cwd: None,
+                        last_process_name: None,
+                        last_command_line: None,
+                    });
+                    changed = true;
+                }
+                if changed {
+                    apps.sort_by_key(|item| item.name.to_lowercase());
+                    app_state.persist_apps(&apps)?;
+                }
+                drop(apps);
+                settings_store.clear_legacy_monitored_ports()?;
+            }
+            let initial_settings = settings_store.get()?;
+            app.manage(app_state);
+            app.manage(settings_store);
             app.manage(bubble::BubbleController::default());
+            app.manage(window_state::WindowBoundsController::default());
+            if let Some(window) = app.get_webview_window("main") {
+                window_state::restore_initial(&window, &initial_settings)?;
+            }
 
             let show_item = MenuItem::with_id(app, "show", "Open Port Lens", true, None::<&str>)?;
             let bubble_item =
@@ -496,12 +638,12 @@ pub fn run() {
                         if let Some(window) = app.get_webview_window("main") {
                             let controller = app.state::<bubble::BubbleController>();
                             let settings = app.state::<SettingsStore>();
-                            if let Ok(current) = settings.get() {
-                                if let Ok(payload) =
-                                    bubble::collapse(&window, &controller, current.bubble_scale)
-                                {
-                                    emit_bubble_state(&window, payload);
-                                }
+                            if settings
+                                .get()
+                                .map(|value| value.compact_mode_enabled)
+                                .unwrap_or(false)
+                            {
+                                let _ = collapse_window(&window, &controller, &settings);
                             }
                         }
                     }
@@ -545,11 +687,51 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main" {
-                if let WindowEvent::CloseRequested { api, .. } = event {
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    let _ = window.hide();
+                    if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        let _ = window_state::persist_now(&webview);
+                    }
+                    window.app_handle().state::<Diagnostics>().record(
+                        "INFO",
+                        "shutdown",
+                        "main window close",
+                    );
+                    window.app_handle().exit(0);
                 }
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                    if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        let minimized = webview.is_minimized().unwrap_or(false);
+                        if minimized {
+                            let settings = window.app_handle().state::<SettingsStore>();
+                            match settings.get().map(|value| minimize_target(&value)) {
+                                Ok(MinimizeTarget::Compact) => {
+                                    let _ = webview.unminimize();
+                                    let controller =
+                                        window.app_handle().state::<bubble::BubbleController>();
+                                    let _ = collapse_window(&webview, &controller, &settings);
+                                }
+                                Ok(MinimizeTarget::Tray) => {
+                                    let _ = webview.hide();
+                                }
+                                Err(error) => {
+                                    window.app_handle().state::<Diagnostics>().record(
+                                        "ERROR",
+                                        "settings_read",
+                                        format!("native minimize error={error}"),
+                                    );
+                                }
+                            }
+                        } else {
+                            window_state::schedule_persist(webview);
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -568,8 +750,27 @@ pub fn run() {
             update_settings,
             get_bubble_state,
             collapse_to_bubble,
+            minimize_main_window,
+            move_compact_bubble,
             expand_from_bubble
         ])
         .run(tauri::generate_context!())
         .expect("error while running Port Lens");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimize_policy_uses_compact_by_default_and_tray_when_disabled() {
+        let defaults = AppSettings::default();
+        assert_eq!(minimize_target(&defaults), MinimizeTarget::Compact);
+
+        let tray = AppSettings {
+            compact_mode_enabled: false,
+            ..AppSettings::default()
+        };
+        assert_eq!(minimize_target(&tray), MinimizeTarget::Tray);
+    }
 }
