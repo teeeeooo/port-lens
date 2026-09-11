@@ -1,16 +1,18 @@
 mod bubble;
+mod diagnostics;
 mod models;
 mod ports;
 mod process_control;
 mod registry;
 mod settings;
 
+use diagnostics::Diagnostics;
 use models::{ListenerInfo, ManagedApp, ManagedRuntime};
 use process_control::{is_process_alive, spawn_managed, terminate_tree};
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, State, WebviewWindow, WindowEvent};
@@ -18,9 +20,59 @@ use tauri::{Emitter, Manager, State, WebviewWindow, WindowEvent};
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
 
+async fn run_listener_scan(
+    kind: &'static str,
+    ports: Vec<u16>,
+    diagnostics: Diagnostics,
+) -> Result<Vec<ListenerInfo>, String> {
+    let started = Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        if kind == "inventory" {
+            ports::list_inventory()
+        } else {
+            ports::list_monitored(&ports)
+        }
+    })
+    .await
+    .map_err(|error| format!("Listener scan worker failed: {error}"))?;
+    let elapsed = started.elapsed();
+    if elapsed >= Duration::from_secs(2) {
+        diagnostics.record(
+            "WARN",
+            "slow_scan",
+            format!("kind={kind} elapsedMs={}", elapsed.as_millis()),
+        );
+    }
+    if let Err(error) = &result {
+        diagnostics.record(
+            "ERROR",
+            "listener_scan",
+            format!("kind={kind} error={error}"),
+        );
+    }
+    let report = result?;
+    if let Some(warning) = report.warning {
+        diagnostics.record(
+            "WARN",
+            "listener_scan_warning",
+            format!("kind={kind} warning={warning}"),
+        );
+    }
+    Ok(report.listeners)
+}
+
 #[tauri::command]
-fn get_listeners() -> Result<Vec<ListenerInfo>, String> {
-    ports::list_listeners()
+async fn get_listeners(diagnostics: State<'_, Diagnostics>) -> Result<Vec<ListenerInfo>, String> {
+    run_listener_scan("inventory", Vec::new(), diagnostics.inner().clone()).await
+}
+
+#[tauri::command]
+async fn get_monitored_listeners(
+    store: State<'_, SettingsStore>,
+    diagnostics: State<'_, Diagnostics>,
+) -> Result<Vec<ListenerInfo>, String> {
+    let ports = store.get()?.monitored_ports;
+    run_listener_scan("monitored", ports, diagnostics.inner().clone()).await
 }
 
 #[tauri::command]
@@ -107,7 +159,11 @@ fn remove_managed_app(app_id: String, state: State<'_, AppState>) -> Result<(), 
     state.persist_apps(&apps)
 }
 
-fn start_by_id(app_id: &str, state: &AppState) -> Result<ManagedRuntime, String> {
+async fn start_by_id(
+    app_id: &str,
+    state: &AppState,
+    diagnostics: Diagnostics,
+) -> Result<ManagedRuntime, String> {
     {
         let mut runtimes = state
             .runtime_pids
@@ -133,9 +189,10 @@ fn start_by_id(app_id: &str, state: &AppState) -> Result<ManagedRuntime, String>
         .cloned()
         .ok_or_else(|| "Managed app was not found.".to_string())?;
 
-    if let Some(blocker) = ports::list_listeners()?
+    if let Some(blocker) = run_listener_scan("targeted", vec![app.port], diagnostics)
+        .await?
         .into_iter()
-        .find(|item| item.port == app.port)
+        .next()
     {
         return Err(format!(
             "Port {} is already occupied by {} (PID {}).",
@@ -178,71 +235,153 @@ fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn start_managed_app(app_id: String, state: State<'_, AppState>) -> Result<ManagedRuntime, String> {
-    start_by_id(&app_id, &state)
+fn record_failure<T>(
+    diagnostics: &Diagnostics,
+    event: &str,
+    context: &str,
+    result: &Result<T, String>,
+) {
+    if let Err(error) = result {
+        diagnostics.record("ERROR", event, format!("{context} error={error}"));
+    }
 }
 
 #[tauri::command]
-fn stop_managed_app(app_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    stop_by_id(&app_id, &state)
-}
-
-#[tauri::command]
-fn restart_managed_app(
+async fn start_managed_app(
     app_id: String,
     state: State<'_, AppState>,
+    diagnostics: State<'_, Diagnostics>,
 ) -> Result<ManagedRuntime, String> {
-    stop_by_id(&app_id, &state)?;
-    thread::sleep(Duration::from_millis(300));
-    start_by_id(&app_id, &state)
+    let diagnostics = diagnostics.inner().clone();
+    let result = start_by_id(&app_id, &state, diagnostics.clone()).await;
+    record_failure(
+        &diagnostics,
+        "managed_action",
+        &format!("action=start appId={app_id}"),
+        &result,
+    );
+    result
 }
 
 #[tauri::command]
-fn kill_listener_process(pid: u32, port: u16, state: State<'_, AppState>) -> Result<(), String> {
-    let listeners = ports::list_listeners()?;
-    if !listeners
-        .iter()
-        .any(|listener| listener.pid == pid && listener.port == port)
-    {
-        return Err("The selected listener changed. Refresh the list and try again.".into());
-    }
-
-    let runtimes = state
-        .runtime_pids
-        .lock()
-        .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
-    if runtimes.values().any(|managed| *managed == pid) {
-        return Err("Use the managed app Stop action for processes started by Port Lens.".into());
-    }
-
-    let managed_ports = state
-        .apps
-        .lock()
-        .map_err(|_| "App registry lock is poisoned.".to_string())?
-        .iter()
-        .filter(|app| runtimes.contains_key(&app.id))
-        .map(|app| app.port)
-        .collect::<Vec<_>>();
-    drop(runtimes);
-
-    let target_ports = listeners
-        .iter()
-        .filter(|listener| listener.pid == pid)
-        .map(|listener| listener.port)
-        .collect::<Vec<_>>();
-    if target_ports.iter().any(|port| managed_ports.contains(port)) {
-        return Err(
-            "This process owns a port assigned to a running managed app. Use Stop instead.".into(),
-        );
-    }
-
-    terminate_tree(pid)
+fn stop_managed_app(
+    app_id: String,
+    state: State<'_, AppState>,
+    diagnostics: State<'_, Diagnostics>,
+) -> Result<(), String> {
+    let result = stop_by_id(&app_id, &state);
+    record_failure(
+        &diagnostics,
+        "managed_action",
+        &format!("action=stop appId={app_id}"),
+        &result,
+    );
+    result
 }
 
 #[tauri::command]
-fn get_settings(store: State<'_, SettingsStore>) -> Result<AppSettings, String> {
-    store.get()
+async fn restart_managed_app(
+    app_id: String,
+    state: State<'_, AppState>,
+    diagnostics: State<'_, Diagnostics>,
+) -> Result<ManagedRuntime, String> {
+    let diagnostics = diagnostics.inner().clone();
+    let result = async {
+        stop_by_id(&app_id, &state)?;
+        tauri::async_runtime::spawn_blocking(|| thread::sleep(Duration::from_millis(300)))
+            .await
+            .map_err(|error| format!("Restart delay worker failed: {error}"))?;
+        start_by_id(&app_id, &state, diagnostics.clone()).await
+    }
+    .await;
+    record_failure(
+        &diagnostics,
+        "managed_action",
+        &format!("action=restart appId={app_id}"),
+        &result,
+    );
+    result
+}
+
+#[tauri::command]
+async fn kill_listener_process(
+    pid: u32,
+    port: u16,
+    state: State<'_, AppState>,
+    diagnostics: State<'_, Diagnostics>,
+) -> Result<(), String> {
+    let diagnostics = diagnostics.inner().clone();
+    let result = async {
+        let listeners = run_listener_scan("targeted", vec![port], diagnostics.clone()).await?;
+        if !listeners
+            .iter()
+            .any(|listener| listener.pid == pid && listener.port == port)
+        {
+            return Err("The selected listener changed. Refresh the list and try again.".into());
+        }
+
+        let runtimes = state
+            .runtime_pids
+            .lock()
+            .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
+        if runtimes.values().any(|managed| *managed == pid) {
+            return Err(
+                "Use the managed app Stop action for processes started by Port Lens.".into(),
+            );
+        }
+
+        let managed_ports = state
+            .apps
+            .lock()
+            .map_err(|_| "App registry lock is poisoned.".to_string())?
+            .iter()
+            .filter(|app| runtimes.contains_key(&app.id))
+            .map(|app| app.port)
+            .collect::<Vec<_>>();
+        drop(runtimes);
+
+        let target_ports = listeners
+            .iter()
+            .filter(|listener| listener.pid == pid)
+            .map(|listener| listener.port)
+            .collect::<Vec<_>>();
+        if target_ports
+            .iter()
+            .any(|target| managed_ports.contains(target))
+        {
+            return Err(
+                "This process owns a port assigned to a running managed app. Use Stop instead."
+                    .into(),
+            );
+        }
+
+        terminate_tree(pid)
+    }
+    .await;
+    record_failure(
+        &diagnostics,
+        "kill_action",
+        &format!("pid={pid} port={port}"),
+        &result,
+    );
+    result
+}
+
+#[tauri::command]
+fn get_settings(
+    store: State<'_, SettingsStore>,
+    diagnostics: State<'_, Diagnostics>,
+) -> Result<AppSettings, String> {
+    let result = store.get();
+    record_failure(&diagnostics, "settings_read", "get", &result);
+    result
+}
+
+#[tauri::command]
+fn open_logs(diagnostics: State<'_, Diagnostics>) -> Result<(), String> {
+    let result = diagnostics.open_log_folder();
+    record_failure(&diagnostics, "diagnostics", "open_logs", &result);
+    result
 }
 
 #[tauri::command]
@@ -251,10 +390,15 @@ fn update_settings(
     window: WebviewWindow,
     store: State<'_, SettingsStore>,
     controller: State<'_, bubble::BubbleController>,
+    diagnostics: State<'_, Diagnostics>,
 ) -> Result<AppSettings, String> {
-    let settings = store.update(patch)?;
-    bubble::resize_collapsed(&window, &controller, settings.bubble_scale)?;
-    Ok(settings)
+    let result = (|| {
+        let settings = store.update(patch)?;
+        bubble::resize_collapsed(&window, &controller, settings.bubble_scale)?;
+        Ok(settings)
+    })();
+    record_failure(&diagnostics, "settings_write", "update", &result);
+    result
 }
 
 fn emit_bubble_state(window: &WebviewWindow, payload: bubble::BubblePayload) {
@@ -311,8 +455,27 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .map_err(|error| format!("Failed to resolve config directory: {error}"))?;
-            app.manage(AppState::load(config_dir.join("managed-apps.json")));
-            app.manage(SettingsStore::load(config_dir)?);
+            let log_dir = app
+                .path()
+                .app_log_dir()
+                .map_err(|error| format!("Failed to resolve log directory: {error}"))?;
+            let diagnostics = Diagnostics::new(log_dir)?;
+            diagnostics.install_panic_hook();
+            diagnostics.record(
+                "INFO",
+                "startup",
+                format!(
+                    "version={} os={}",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::OS
+                ),
+            );
+            app.manage(diagnostics.clone());
+            app.manage(AppState::load(
+                config_dir.join("managed-apps.json"),
+                diagnostics.clone(),
+            ));
+            app.manage(SettingsStore::load(config_dir, diagnostics)?);
             app.manage(bubble::BubbleController::default());
 
             let show_item = MenuItem::with_id(app, "show", "Open Port Lens", true, None::<&str>)?;
@@ -345,7 +508,11 @@ pub fn run() {
                     "refresh" => {
                         let _ = app.emit_to("main", REFRESH_EVENT, ());
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        app.state::<Diagnostics>()
+                            .record("INFO", "shutdown", "explicit tray quit");
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -387,6 +554,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_listeners,
+            get_monitored_listeners,
             get_managed_apps,
             get_managed_runtimes,
             save_managed_app,
@@ -396,6 +564,7 @@ pub fn run() {
             restart_managed_app,
             kill_listener_process,
             get_settings,
+            open_logs,
             update_settings,
             get_bubble_state,
             collapse_to_bubble,

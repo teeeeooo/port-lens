@@ -3,9 +3,11 @@ import {
   isDevMockMode,
   mockGetApps,
   mockGetListeners,
+  mockGetMonitoredListeners,
   mockGetRuntimes,
   mockGetSettings,
   mockKillListener,
+  mockOpenLogs,
   mockRemoveApp,
   mockRestartApp,
   mockSaveApp,
@@ -17,6 +19,9 @@ import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedRuntime
 
 export const getListeners = () =>
   isDevMockMode ? mockGetListeners() : invoke<ListenerInfo[]>("get_listeners");
+
+export const getMonitoredListeners = () =>
+  isDevMockMode ? mockGetMonitoredListeners() : invoke<ListenerInfo[]>("get_monitored_listeners");
 
 export const getManagedApps = () =>
   isDevMockMode ? mockGetApps() : invoke<ManagedApp[]>("get_managed_apps");
@@ -49,6 +54,9 @@ export const getSettings = () =>
 
 export const updateSettings = (patch: SettingsPatch) =>
   isDevMockMode ? mockUpdateSettings(patch) : invoke<AppSettings>("update_settings", { patch });
+
+export const openLogs = () =>
+  isDevMockMode ? mockOpenLogs() : invoke<void>("open_logs");
 
 const mockBubbleState = (): BubbleState => ({
   collapsed: new URLSearchParams(window.location.search).get("bubble") === "1",

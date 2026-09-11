@@ -88,6 +88,7 @@ export async function mockKillListener(pid: number, port: number) {
 let mockSettings: AppSettings = {
   language: new URLSearchParams(window.location.search).get("lang") === "ko" ? "ko" : "en",
   bubbleScale: Number(new URLSearchParams(window.location.search).get("bubbleScale") ?? "1") || 1,
+  monitoredPorts: [3000, 3101, 8000, 9999],
 };
 
 export async function mockGetSettings() {
@@ -98,4 +99,14 @@ export async function mockUpdateSettings(patch: SettingsPatch) {
   mockSettings = { ...mockSettings, ...patch };
   mockSettings.bubbleScale = Math.round(Math.max(0.7, Math.min(1.5, mockSettings.bubbleScale)) * 10) / 10;
   return clone(mockSettings);
+}
+
+export async function mockGetMonitoredListeners() {
+  const state = await loadState();
+  const watched = new Set(mockSettings.monitoredPorts);
+  return clone(state.listeners.filter((listener) => watched.has(listener.port)));
+}
+
+export async function mockOpenLogs() {
+  return undefined;
 }

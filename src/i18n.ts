@@ -20,7 +20,10 @@ const EN = {
   emptyTitle: "No managed apps yet",
   emptyDescription: "Add a dev server to get one-click Start / Stop / Restart.",
   conflict: "Port {port} is already held by {process} (PID {pid}).",
-  listenersDescription: "Active TCP listeners discovered directly from the operating system.",
+  monitoredDescription: "Only selected Ports are checked frequently and enriched with process details.",
+  monitoredEmptyTitle: "No monitored Ports yet",
+  monitoredEmptyDescription: "Select Monitor in the Listening ports list to keep a Port under active watch.",
+  listenersDescription: "All active TCP listeners. This inventory refreshes periodically without heavy process inspection.",
   formHelp: "Port Lens will launch this command in the working directory and keep its root PID for safe Stop / Restart.",
   removeConfirm: "Remove {name} from Port Lens?",
   terminateTitle: "Terminate process?",
@@ -29,6 +32,7 @@ const EN = {
   settingsDescription: "Interface preferences are saved for the next launch.",
   languageDescription: "System follows the operating-system language. Technical labels remain in English.",
   bubbleSizeDescription: "Adjust the floating bubble from 70% to 150%. The size is saved automatically.",
+  diagnosticsDescription: "Open Port Lens diagnostic logs for startup, scan, action, timeout, and crash information.",
 } as const;
 
 const KO: Record<MessageKey, string> = {
@@ -37,7 +41,10 @@ const KO: Record<MessageKey, string> = {
   emptyTitle: "등록된 App이 없습니다",
   emptyDescription: "개발 서버를 추가하면 Start / Stop / Restart를 한 번에 제어할 수 있습니다.",
   conflict: "Port {port}는 현재 {process} (PID {pid})가 사용 중입니다.",
-  listenersDescription: "운영체제에서 직접 탐지한 현재 TCP LISTEN Port입니다.",
+  monitoredDescription: "선택한 Port만 자주 확인하고 process 세부 정보를 보강합니다.",
+  monitoredEmptyTitle: "모니터링 중인 Port가 없습니다",
+  monitoredEmptyDescription: "Listening ports 목록에서 Monitor를 선택하면 해당 Port를 계속 확인합니다.",
+  listenersDescription: "현재 열려 있는 전체 TCP LISTEN Port입니다. 이 목록은 가벼운 inventory 방식으로 주기적으로 갱신됩니다.",
   formHelp: "Port Lens는 지정한 working directory에서 command를 실행하고, 안전한 Stop / Restart를 위해 root PID를 보관합니다.",
   removeConfirm: "{name} App을 Port Lens에서 제거할까요?",
   terminateTitle: "Process를 종료할까요?",
@@ -46,6 +53,7 @@ const KO: Record<MessageKey, string> = {
   settingsDescription: "인터페이스 설정은 저장되며 다음 실행에도 유지됩니다.",
   languageDescription: "System은 운영체제 언어를 따릅니다. App, Port, Process 같은 기술 용어는 영어로 유지합니다.",
   bubbleSizeDescription: "Floating bubble 크기를 70%~150%로 조절합니다. 변경값은 자동으로 저장됩니다.",
+  diagnosticsDescription: "startup, scan, action, timeout, crash 정보를 확인할 수 있는 Port Lens diagnostic log 폴더를 엽니다.",
 };
 
 export function t(language: UiLanguage, key: MessageKey, params?: Params) {

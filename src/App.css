@@ -372,6 +372,17 @@ tbody tr:hover { background: var(--panel-soft); }
   color: var(--danger);
 }
 .table-empty { padding: 28px; text-align: center; color: var(--muted); }
+.monitor-empty { display: flex; flex-direction: column; gap: 5px; padding: 24px 20px; color: var(--text); }
+.monitor-empty span { color: var(--muted); font-size: 12px; }
+.monitored-table-wrap { max-height: 300px; }
+.monitor-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; }
+.monitor-status::before { content: ""; width: 7px; height: 7px; border-radius: 999px; background: #98a2b3; }
+.monitor-status.online { color: var(--success); }
+.monitor-status.online::before { background: var(--success); }
+.monitor-status.offline { color: var(--muted); }
+.action-group { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.monitor-button { min-height: 27px; padding: 0 8px; background: transparent; color: var(--accent); }
+.monitor-button.active { color: var(--muted); }
 
 .modal-backdrop {
   position: fixed;

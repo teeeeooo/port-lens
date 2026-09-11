@@ -7,10 +7,11 @@ interface Props {
   settings: AppSettings;
   language: UiLanguage;
   onChange: (next: Partial<AppSettings>) => Promise<void>;
+  onOpenLogs: () => Promise<void>;
   onClose: () => void;
 }
 
-export default function SettingsModal({ settings, language, onChange, onClose }: Props) {
+export default function SettingsModal({ settings, language, onChange, onOpenLogs, onClose }: Props) {
   const [bubblePercent, setBubblePercent] = useState(Math.round(settings.bubbleScale * 100));
 
   useEffect(() => {
@@ -64,6 +65,14 @@ export default function SettingsModal({ settings, language, onChange, onClose }:
             />
             <output>{bubblePercent}%</output>
           </div>
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <strong>Diagnostics</strong>
+            <p>{t(language, "diagnosticsDescription")}</p>
+          </div>
+          <button type="button" onClick={() => void onOpenLogs()}>Open logs</button>
         </div>
       </div>
     </div>

@@ -27,11 +27,13 @@ export interface BubbleState {
 export interface AppSettings {
   language: "system" | "en" | "ko";
   bubbleScale: number;
+  monitoredPorts: number[];
 }
 
 export interface SettingsPatch {
   language?: AppSettings["language"];
   bubbleScale?: number;
+  monitoredPorts?: number[];
 }
 
 export type ManagedStatus = "running" | "occupied" | "stopped";

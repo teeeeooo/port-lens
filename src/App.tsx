@@ -1,4 +1,4 @@
-import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -7,10 +7,12 @@ import {
   expandFromBubble,
   getBubbleState,
   getListeners,
+  getMonitoredListeners,
   getSettings,
   getManagedApps,
   getManagedRuntimes,
   killListenerProcess,
+  openLogs,
   removeManagedApp,
   restartManagedApp,
   saveManagedApp,
@@ -41,6 +43,7 @@ const createDraft = (): ManagedApp => ({
 const DEFAULT_SETTINGS: AppSettings = {
   language: "system",
   bubbleScale: 1,
+  monitoredPorts: [],
 };
 
 function messageOf(error: unknown) {
@@ -99,6 +102,7 @@ function App() {
   const mockParams = isDevMockMode ? new URLSearchParams(window.location.search) : null;
   const mockScreen = mockParams?.get("screen");
   const [listeners, setListeners] = useState<ListenerInfo[]>([]);
+  const [monitoredListeners, setMonitoredListeners] = useState<ListenerInfo[]>([]);
   const [apps, setApps] = useState<ManagedApp[]>([]);
   const [runtimes, setRuntimes] = useState<ManagedRuntime[]>([]);
   const [query, setQuery] = useState("");
@@ -116,32 +120,86 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
+  const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
+  const monitoredRefreshInFlight = useRef<Promise<void> | null>(null);
   const uiLanguage = resolveLanguage(settings.language);
 
-  const refresh = useCallback(async (silent = false) => {
+  const refreshInventory = useCallback((silent = false) => {
+    if (inventoryRefreshInFlight.current) return inventoryRefreshInFlight.current;
     if (!silent) setLoading(true);
-    try {
-      const [nextListeners, nextApps, nextRuntimes] = await Promise.all([
-        getListeners(),
-        getManagedApps(),
-        getManagedRuntimes(),
-      ]);
-      setListeners(nextListeners);
-      setApps(nextApps);
-      setRuntimes(nextRuntimes);
-      setError(null);
-    } catch (refreshError) {
-      setError(messageOf(refreshError));
-    } finally {
-      if (!silent) setLoading(false);
-    }
+
+    const task = (async () => {
+      try {
+        const [nextListeners, nextApps, nextRuntimes] = await Promise.all([
+          getListeners(),
+          getManagedApps(),
+          getManagedRuntimes(),
+        ]);
+        setListeners(nextListeners);
+        setApps(nextApps);
+        setRuntimes(nextRuntimes);
+        setError(null);
+      } catch (refreshError) {
+        setError(messageOf(refreshError));
+      } finally {
+        if (!silent) setLoading(false);
+        inventoryRefreshInFlight.current = null;
+      }
+    })();
+
+    inventoryRefreshInFlight.current = task;
+    return task;
   }, []);
 
+  const refreshMonitored = useCallback(() => {
+    if (monitoredRefreshInFlight.current) return monitoredRefreshInFlight.current;
+    const task = getMonitoredListeners()
+      .then((nextListeners) => setMonitoredListeners(nextListeners))
+      .catch((refreshError) => setError(messageOf(refreshError)))
+      .finally(() => {
+        monitoredRefreshInFlight.current = null;
+      });
+    monitoredRefreshInFlight.current = task;
+    return task;
+  }, []);
+
+  const refreshAll = useCallback(async (silent = false) => {
+    await Promise.all([refreshInventory(silent), refreshMonitored()]);
+  }, [refreshInventory, refreshMonitored]);
+
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(true), 4000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+    let stopped = false;
+    let timer: number | undefined;
+    const scheduleNext = () => {
+      if (stopped) return;
+      timer = window.setTimeout(async () => {
+        await refreshInventory(true);
+        scheduleNext();
+      }, 10_000);
+    };
+    void refreshInventory().finally(scheduleNext);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [refreshInventory]);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const scheduleNext = () => {
+      if (stopped) return;
+      timer = window.setTimeout(async () => {
+        await refreshMonitored();
+        scheduleNext();
+      }, 3_000);
+    };
+    void refreshMonitored().finally(scheduleNext);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [refreshMonitored]);
 
   useEffect(() => {
     void getSettings()
@@ -177,13 +235,13 @@ function App() {
       if (active) setBubbleMode(event.payload.collapsed);
     }).then((unlisten) => cleanups.push(unlisten));
 
-    void listen("port-lens://refresh", () => void refresh(true)).then((unlisten) => cleanups.push(unlisten));
+    void listen("port-lens://refresh", () => void refreshAll(true)).then((unlisten) => cleanups.push(unlisten));
 
     return () => {
       active = false;
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [refresh]);
+  }, [refreshAll]);
 
   const managedRows = useMemo<ManagedRow[]>(() => {
     const runtimeByApp = new Map(runtimes.map((runtime) => [runtime.appId, runtime]));
@@ -213,6 +271,14 @@ function App() {
     return { primary: listener.processName, secondary: undefined, kind: "process" as const };
   }, [managedRows]);
 
+  const monitoredRows = useMemo(() => {
+    const byPort = new Map<number, ListenerInfo>();
+    for (const listener of monitoredListeners) {
+      if (!byPort.has(listener.port)) byPort.set(listener.port, listener);
+    }
+    return settings.monitoredPorts.map((port) => ({ port, listener: byPort.get(port) }));
+  }, [monitoredListeners, settings.monitoredPorts]);
+
   const filteredListeners = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return listeners;
@@ -231,6 +297,7 @@ function App() {
   }, [listeners, presentationFor, query]);
 
   const runningCount = managedRows.filter((row) => row.status === "running").length;
+  const monitoredOnlineCount = monitoredRows.filter((row) => row.listener).length;
 
   const savePreferences = async (patch: Partial<AppSettings>) => {
     try {
@@ -238,6 +305,34 @@ function App() {
       setSettings(next);
     } catch (settingsError) {
       setError(messageOf(settingsError));
+    }
+  };
+
+  const toggleMonitoring = async (port: number) => {
+    const monitored = settings.monitoredPorts.includes(port);
+    const monitoredPorts = monitored
+      ? settings.monitoredPorts.filter((item) => item !== port)
+      : [...settings.monitoredPorts, port];
+    setBusy(`monitor:${port}`);
+    setError(null);
+    try {
+      const hadRefreshInFlight = monitoredRefreshInFlight.current !== null;
+      const next = await updateSettings({ monitoredPorts });
+      setSettings(next);
+      await refreshMonitored();
+      if (hadRefreshInFlight) await refreshMonitored();
+    } catch (settingsError) {
+      setError(messageOf(settingsError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openDiagnosticLogs = async () => {
+    try {
+      await openLogs();
+    } catch (logError) {
+      setError(messageOf(logError));
     }
   };
 
@@ -270,7 +365,7 @@ function App() {
     setError(null);
     try {
       await action();
-      await refresh(true);
+      await refreshAll(true);
     } catch (actionError) {
       setError(messageOf(actionError));
     } finally {
@@ -337,13 +432,14 @@ function App() {
             {runningCount} running
           </div>
           <div className="summary-pill">{listeners.length} listeners</div>
+          <div className="summary-pill">{monitoredOnlineCount}/{settings.monitoredPorts.length} monitored</div>
           <button className="secondary-button" onClick={() => void collapseBubble()}>
             Compact
           </button>
           <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
             Settings
           </button>
-          <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>
+          <button className="secondary-button" onClick={() => void refreshAll()} disabled={loading}>
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
@@ -436,6 +532,48 @@ function App() {
         )}
       </section>
 
+      <section className="panel monitored-panel">
+        <div className="section-header">
+          <div>
+            <h2>Monitored Ports</h2>
+            <p>{t(uiLanguage, "monitoredDescription")}</p>
+          </div>
+          <div className="summary-pill">{monitoredOnlineCount}/{settings.monitoredPorts.length} online</div>
+        </div>
+        {monitoredRows.length === 0 ? (
+          <div className="monitor-empty">
+            <strong>{t(uiLanguage, "monitoredEmptyTitle")}</strong>
+            <span>{t(uiLanguage, "monitoredEmptyDescription")}</span>
+          </div>
+        ) : (
+          <div className="table-wrap monitored-table-wrap">
+            <table>
+              <thead><tr><th>Port</th><th>Status</th><th>App / Process</th><th>PID</th><th className="action-column">Action</th></tr></thead>
+              <tbody>
+                {monitoredRows.map(({ port, listener }) => {
+                  const presentation = listener ? presentationFor(listener) : undefined;
+                  return (
+                    <tr key={`monitored-${port}`}>
+                      <td><span className="port-chip">:{port}</span></td>
+                      <td><span className={`monitor-status ${listener ? "online" : "offline"}`}>{listener ? "Online" : "Offline"}</span></td>
+                      <td className="process-cell" title={listener?.commandLine ?? listener?.processName ?? "Offline"}>
+                        <span className="process-primary">{presentation?.primary ?? "—"}</span>
+                        {presentation?.secondary && <span className="process-secondary">{presentation.secondary}</span>}
+                      </td>
+                      <td className="mono-cell">{listener?.pid ?? "—"}</td>
+                      <td className="action-column"><div className="action-group">
+                        <button disabled={!listener} onClick={() => void openUrl(`http://localhost:${port}`)}>Open</button>
+                        <button className="ghost-button" disabled={busy === `monitor:${port}`} onClick={() => void toggleMonitoring(port)}>Unmonitor</button>
+                      </div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       <section className="panel listeners-panel">
         <div className="section-header listeners-heading">
           <div>
@@ -470,6 +608,7 @@ function App() {
                 const managedListener = managedRows.some(
                   (app) => app.status === "running" && app.port === listener.port,
                 );
+                const monitored = settings.monitoredPorts.includes(listener.port);
                 return (
                   <tr key={`${listener.protocol}-${listener.localAddress}-${listener.port}-${listener.pid}`}>
                     <td><span className="port-chip">:{listener.port}</span></td>
@@ -482,7 +621,14 @@ function App() {
                     <td className="mono-cell">{listener.pid}</td>
                     <td className="mono-cell muted-cell">{listener.localAddress}</td>
                     <td><span className="protocol-chip">{listener.protocol}</span></td>
-                    <td className="action-column">
+                    <td className="action-column"><div className="action-group">
+                      <button
+                        className={monitored ? "monitor-button active" : "monitor-button"}
+                        disabled={busy === `monitor:${listener.port}`}
+                        onClick={() => void toggleMonitoring(listener.port)}
+                      >
+                        {monitored ? "Unmonitor" : "Monitor"}
+                      </button>
                       <button
                         className="danger-link"
                         disabled={managedListener || busy === `kill:${listener.pid}`}
@@ -491,7 +637,7 @@ function App() {
                       >
                         Kill
                       </button>
-                    </td>
+                    </div></td>
                   </tr>
                 );
               })}
@@ -572,6 +718,7 @@ function App() {
           settings={settings}
           language={uiLanguage}
           onChange={savePreferences}
+          onOpenLogs={openDiagnosticLogs}
           onClose={() => setSettingsOpen(false)}
         />
       )}
