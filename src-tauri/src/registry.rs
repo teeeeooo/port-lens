@@ -11,6 +11,8 @@ pub struct AppState {
     diagnostics: Diagnostics,
     pub apps: Mutex<Vec<ManagedApp>>,
     pub runtime_pids: Mutex<HashMap<String, u32>>,
+    pub reattached_app_ids: Mutex<HashSet<String>>,
+    pub reattach_attempt_pids: Mutex<HashMap<String, u32>>,
     pub expected_exit_pids: Mutex<HashSet<u32>>,
     pub last_exits: Mutex<HashMap<String, ManagedExitInfo>>,
 }
@@ -37,6 +39,8 @@ impl AppState {
             diagnostics,
             apps: Mutex::new(apps),
             runtime_pids: Mutex::new(HashMap::new()),
+            reattached_app_ids: Mutex::new(HashSet::new()),
+            reattach_attempt_pids: Mutex::new(HashMap::new()),
             expected_exit_pids: Mutex::new(HashSet::new()),
             last_exits: Mutex::new(HashMap::new()),
         }
@@ -87,6 +91,10 @@ mod tests {
             last_managed_pid: Some(4242),
             last_managed_process_name: Some("node".into()),
             last_managed_command_line: Some("node server.js".into()),
+            last_managed_listener_creation_time: Some("listener-created".into()),
+            last_managed_root_pid: Some(4100),
+            last_managed_root_creation_time: Some("root-created".into()),
+            last_managed_root_command_line: Some("cmd.exe /D /S /C node server.js".into()),
         };
 
         state.persist_apps(std::slice::from_ref(&app)).unwrap();

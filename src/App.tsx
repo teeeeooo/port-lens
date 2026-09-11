@@ -701,6 +701,10 @@ function App() {
                     <div className="managed-origin-note">{t(uiLanguage, "previouslyManagedNote")}</div>
                   )}
 
+                  {app.runtime?.reattached && (
+                    <div className="managed-origin-note">{t(uiLanguage, "reattachedManagedNote")}</div>
+                  )}
+
                   {app.lastExit && !app.runtime && (
                     <div className={`exit-note ${app.lastExit.earlyExit ? "early" : ""}`}>
                       {t(uiLanguage, app.lastExit.earlyExit ? "earlyExitNotice" : "lastExitNotice", {

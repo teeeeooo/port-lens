@@ -9,10 +9,11 @@ mod window_state;
 
 use diagnostics::{Diagnostics, ManagedLogPaths};
 use models::{ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime};
-use process_control::{is_process_alive, spawn_managed, terminate_tree};
+use process_control::{
+    is_process_alive, process_ancestry, spawn_managed, terminate_tree, ProcessSnapshot,
+};
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
-use std::collections::HashSet;
 use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -84,6 +85,243 @@ async fn get_listeners(diagnostics: State<'_, Diagnostics>) -> Result<Vec<Listen
     run_listener_scan("inventory", Vec::new(), diagnostics.inner().clone()).await
 }
 
+fn normalized_process_name(value: &str) -> String {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+fn normalized_command_line(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn verify_saved_root_identity(
+    app: &ManagedApp,
+    root_pid: u32,
+    ancestry: &[ProcessSnapshot],
+) -> Result<(), String> {
+    if app.last_managed_root_pid != Some(root_pid) {
+        return Err("managed root PID changed".into());
+    }
+    let root_snapshot = ancestry
+        .iter()
+        .find(|item| item.pid == root_pid)
+        .ok_or_else(|| "managed root process is unavailable".to_string())?;
+    if normalized_process_name(&root_snapshot.process_name) != "cmd" {
+        return Err("managed root is not cmd.exe".into());
+    }
+    let saved_root_creation = app
+        .last_managed_root_creation_time
+        .as_deref()
+        .ok_or_else(|| "managed root creation time was not persisted".to_string())?;
+    if root_snapshot.creation_time != saved_root_creation {
+        return Err("managed root creation time changed".into());
+    }
+    let saved_root_command = app
+        .last_managed_root_command_line
+        .as_deref()
+        .ok_or_else(|| "managed root command line was not persisted".to_string())?;
+    let root_command = root_snapshot
+        .command_line
+        .as_deref()
+        .ok_or_else(|| "managed root command line is unavailable".to_string())?;
+    if normalized_command_line(saved_root_command) != normalized_command_line(root_command) {
+        return Err("managed root command line changed".into());
+    }
+    Ok(())
+}
+
+fn verify_reattach_identity(
+    app: &ManagedApp,
+    listener: &ListenerInfo,
+    ancestry: &[ProcessSnapshot],
+) -> Result<u32, String> {
+    if app.launch_config().is_none() {
+        return Err("launch configuration is incomplete".into());
+    }
+    let saved_listener_pid = app
+        .last_managed_pid
+        .ok_or_else(|| "managed listener PID was not persisted".to_string())?;
+    if saved_listener_pid != listener.pid {
+        return Err("listener PID changed".into());
+    }
+    let saved_name = app
+        .last_managed_process_name
+        .as_deref()
+        .ok_or_else(|| "managed process name was not persisted".to_string())?;
+    if normalized_process_name(saved_name) != normalized_process_name(&listener.process_name) {
+        return Err("listener process name changed".into());
+    }
+    let saved_listener_command = app
+        .last_managed_command_line
+        .as_deref()
+        .ok_or_else(|| "managed listener command line was not persisted".to_string())?;
+    let listener_command = listener
+        .command_line
+        .as_deref()
+        .ok_or_else(|| "current listener command line is unavailable".to_string())?;
+    if normalized_command_line(saved_listener_command) != normalized_command_line(listener_command)
+    {
+        return Err("listener command line changed".into());
+    }
+
+    let listener_snapshot = ancestry
+        .iter()
+        .find(|item| item.pid == listener.pid)
+        .ok_or_else(|| "listener process is missing from its ancestry snapshot".to_string())?;
+    let saved_listener_creation = app
+        .last_managed_listener_creation_time
+        .as_deref()
+        .ok_or_else(|| "managed listener creation time was not persisted".to_string())?;
+    if listener_snapshot.creation_time != saved_listener_creation {
+        return Err("listener creation time changed".into());
+    }
+
+    let root_pid = app
+        .last_managed_root_pid
+        .ok_or_else(|| "managed root PID was not persisted".to_string())?;
+    if !ancestry.iter().any(|item| item.pid == root_pid) {
+        return Err("managed root is no longer an ancestor of the listener".into());
+    }
+    verify_saved_root_identity(app, root_pid, ancestry)?;
+    Ok(root_pid)
+}
+
+fn clear_reattach_attempt(state: &AppState, app_id: &str) {
+    if let Ok(mut attempts) = state.reattach_attempt_pids.lock() {
+        attempts.remove(app_id);
+    }
+}
+
+fn retryable_reattach_rejection(reason: &str) -> bool {
+    matches!(
+        reason,
+        "current listener command line is unavailable"
+            | "listener process is missing from its ancestry snapshot"
+            | "managed root process is unavailable"
+            | "managed root command line is unavailable"
+    )
+}
+
+async fn attempt_runtime_reattach(
+    state: &AppState,
+    diagnostics: &Diagnostics,
+    app: ManagedApp,
+    listener: ListenerInfo,
+) {
+    if cfg!(not(target_os = "windows")) {
+        return;
+    }
+    if listener
+        .command_line
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        diagnostics.record(
+            "INFO",
+            "runtime_reattach_deferred",
+            format!(
+                "appId={} listenerPid={} reason=listener-command-unavailable",
+                app.id, listener.pid
+            ),
+        );
+        clear_reattach_attempt(state, &app.id);
+        return;
+    }
+    {
+        let mut attempts = match state.reattach_attempt_pids.lock() {
+            Ok(attempts) => attempts,
+            Err(_) => return,
+        };
+        if attempts.get(&app.id).copied() == Some(listener.pid) {
+            return;
+        }
+        attempts.insert(app.id.clone(), listener.pid);
+    }
+
+    let listener_pid = listener.pid;
+    let ancestry =
+        match tauri::async_runtime::spawn_blocking(move || process_ancestry(listener_pid)).await {
+            Ok(Ok(ancestry)) => ancestry,
+            Ok(Err(error)) => {
+                diagnostics.record(
+                    "WARN",
+                    "runtime_reattach",
+                    format!(
+                        "appId={} listenerPid={} queryError={error}",
+                        app.id, listener_pid
+                    ),
+                );
+                clear_reattach_attempt(state, &app.id);
+                return;
+            }
+            Err(error) => {
+                diagnostics.record(
+                    "WARN",
+                    "runtime_reattach",
+                    format!(
+                        "appId={} listenerPid={} workerError={error}",
+                        app.id, listener_pid
+                    ),
+                );
+                clear_reattach_attempt(state, &app.id);
+                return;
+            }
+        };
+
+    let root_pid = match verify_reattach_identity(&app, &listener, &ancestry) {
+        Ok(root_pid) => root_pid,
+        Err(reason) => {
+            diagnostics.record(
+                "INFO",
+                "runtime_reattach_rejected",
+                format!(
+                    "appId={} listenerPid={} reason={reason}",
+                    app.id, listener_pid
+                ),
+            );
+            if retryable_reattach_rejection(&reason) {
+                clear_reattach_attempt(state, &app.id);
+            }
+            return;
+        }
+    };
+    if !is_process_alive(root_pid) {
+        diagnostics.record(
+            "INFO",
+            "runtime_reattach_rejected",
+            format!("appId={} rootPid={root_pid} reason=root-not-alive", app.id),
+        );
+        return;
+    }
+
+    let mut runtimes = match state.runtime_pids.lock() {
+        Ok(runtimes) => runtimes,
+        Err(_) => return,
+    };
+    if runtimes.contains_key(&app.id) {
+        return;
+    }
+    runtimes.insert(app.id.clone(), root_pid);
+    drop(runtimes);
+    if let Ok(mut reattached) = state.reattached_app_ids.lock() {
+        reattached.insert(app.id.clone());
+    }
+    diagnostics.record(
+        "INFO",
+        "runtime_reattach",
+        format!(
+            "appId={} listenerPid={} rootPid={root_pid} verified=true",
+            app.id, listener_pid
+        ),
+    );
+}
+
 #[tauri::command]
 async fn get_monitored_listeners(
     state: State<'_, AppState>,
@@ -96,27 +334,48 @@ async fn get_monitored_listeners(
         .iter()
         .map(|app| app.port)
         .collect::<Vec<_>>();
-    let listeners = run_listener_scan("monitored", ports, diagnostics.inner().clone()).await?;
-    let managed_app_ids = state
+    let diagnostics = diagnostics.inner().clone();
+    let listeners = run_listener_scan("monitored", ports, diagnostics.clone()).await?;
+
+    let apps_snapshot = {
+        let mut apps = state
+            .apps
+            .lock()
+            .map_err(|_| "App registry lock is poisoned.".to_string())?;
+        let mut changed = false;
+        for app in apps.iter_mut() {
+            if let Some(listener) = listeners.iter().find(|listener| listener.port == app.port) {
+                changed |= app.observe_listener(listener, false);
+            }
+        }
+        if changed {
+            state.persist_apps(&apps)?;
+        }
+        apps.clone()
+    };
+
+    let runtime_ids = state
         .runtime_pids
         .lock()
         .map_err(|_| "Runtime registry lock is poisoned.".to_string())?
         .keys()
         .cloned()
-        .collect::<HashSet<_>>();
-
-    let mut apps = state
-        .apps
-        .lock()
-        .map_err(|_| "App registry lock is poisoned.".to_string())?;
-    let mut changed = false;
-    for app in apps.iter_mut() {
-        if let Some(listener) = listeners.iter().find(|listener| listener.port == app.port) {
-            changed |= app.observe_listener(listener, managed_app_ids.contains(&app.id));
+        .collect::<std::collections::HashSet<_>>();
+    for app in apps_snapshot {
+        if runtime_ids.contains(&app.id) {
+            continue;
         }
-    }
-    if changed {
-        state.persist_apps(&apps)?;
+        let Some(listener) = listeners
+            .iter()
+            .find(|listener| listener.port == app.port)
+            .cloned()
+        else {
+            if let Ok(mut attempts) = state.reattach_attempt_pids.lock() {
+                attempts.remove(&app.id);
+            }
+            continue;
+        };
+        attempt_runtime_reattach(&state, &diagnostics, app, listener).await;
     }
     Ok(listeners)
 }
@@ -136,13 +395,22 @@ fn get_managed_runtimes(state: State<'_, AppState>) -> Result<Vec<ManagedRuntime
         .runtime_pids
         .lock()
         .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
-
     runtimes.retain(|_, pid| is_process_alive(*pid));
+    let live_ids = runtimes
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let mut reattached = state
+        .reattached_app_ids
+        .lock()
+        .map_err(|_| "Reattached runtime registry lock is poisoned.".to_string())?;
+    reattached.retain(|app_id| live_ids.contains(app_id));
     Ok(runtimes
         .iter()
         .map(|(app_id, root_pid)| ManagedRuntime {
             app_id: app_id.clone(),
             root_pid: *root_pid,
+            reattached: reattached.contains(app_id),
         })
         .collect())
 }
@@ -206,6 +474,28 @@ async fn capture_managed_identity_after_start(
             continue;
         };
 
+        #[cfg(windows)]
+        let ancestry = {
+            let listener_pid = listener.pid;
+            match tauri::async_runtime::spawn_blocking(move || process_ancestry(listener_pid)).await
+            {
+                Ok(Ok(ancestry)) => ancestry,
+                _ => continue,
+            }
+        };
+        #[cfg(windows)]
+        let Some(listener_snapshot) = ancestry.iter().find(|item| item.pid == listener.pid) else {
+            continue;
+        };
+        #[cfg(windows)]
+        let Some(root_snapshot) = ancestry.iter().find(|item| item.pid == root_pid) else {
+            continue;
+        };
+        #[cfg(windows)]
+        let Some(root_command_line) = root_snapshot.command_line.clone() else {
+            continue;
+        };
+
         let mut apps = match state.apps.lock() {
             Ok(apps) => apps,
             Err(_) => return,
@@ -213,7 +503,18 @@ async fn capture_managed_identity_after_start(
         let Some(app) = apps.iter_mut().find(|app| app.id == app_id) else {
             return;
         };
-        if app.observe_listener(&listener, true) {
+        #[cfg(windows)]
+        let changed = app.record_managed_launch_identity(
+            &listener,
+            listener_snapshot.creation_time.clone(),
+            root_pid,
+            root_snapshot.creation_time.clone(),
+            root_command_line,
+        );
+        #[cfg(not(windows))]
+        let changed = app.observe_listener(&listener, true);
+
+        if changed {
             if let Err(error) = state.persist_apps(&apps) {
                 diagnostics.record(
                     "ERROR",
@@ -227,8 +528,10 @@ async fn capture_managed_identity_after_start(
             "INFO",
             "managed_identity",
             format!(
-                "appId={app_id} rootPid={root_pid} listenerPid={} process={}",
-                listener.pid, listener.process_name
+                "appId={app_id} rootPid={root_pid} listenerPid={} process={} reattachIdentity={}",
+                listener.pid,
+                listener.process_name,
+                cfg!(windows)
             ),
         );
         return;
@@ -331,6 +634,10 @@ fn save_managed_app(mut app: ManagedApp, state: State<'_, AppState>) -> Result<M
     app.last_command_line = normalize_optional(app.last_command_line);
     app.last_managed_process_name = normalize_optional(app.last_managed_process_name);
     app.last_managed_command_line = normalize_optional(app.last_managed_command_line);
+    app.last_managed_listener_creation_time =
+        normalize_optional(app.last_managed_listener_creation_time);
+    app.last_managed_root_creation_time = normalize_optional(app.last_managed_root_creation_time);
+    app.last_managed_root_command_line = normalize_optional(app.last_managed_root_command_line);
 
     if app.id.is_empty() || app.name.is_empty() {
         return Err("Name is required.".into());
@@ -366,15 +673,27 @@ fn save_managed_app(mut app: ManagedApp, state: State<'_, AppState>) -> Result<M
         app.last_managed_pid = existing.last_managed_pid;
         app.last_managed_process_name = existing.last_managed_process_name.clone();
         app.last_managed_command_line = existing.last_managed_command_line.clone();
+        app.last_managed_listener_creation_time =
+            existing.last_managed_listener_creation_time.clone();
+        app.last_managed_root_pid = existing.last_managed_root_pid;
+        app.last_managed_root_creation_time = existing.last_managed_root_creation_time.clone();
+        app.last_managed_root_command_line = existing.last_managed_root_command_line.clone();
         *existing = app.clone();
     } else {
         app.last_managed_pid = None;
         app.last_managed_process_name = None;
         app.last_managed_command_line = None;
+        app.last_managed_listener_creation_time = None;
+        app.last_managed_root_pid = None;
+        app.last_managed_root_creation_time = None;
+        app.last_managed_root_command_line = None;
         apps.push(app.clone());
     }
     apps.sort_by_key(|item| item.name.to_lowercase());
     state.persist_apps(&apps)?;
+    if let Ok(mut attempts) = state.reattach_attempt_pids.lock() {
+        attempts.remove(&app.id);
+    }
     Ok(app)
 }
 
@@ -404,6 +723,12 @@ fn remove_managed_app(app_id: String, state: State<'_, AppState>) -> Result<(), 
         .lock()
         .map_err(|_| "Exit registry lock is poisoned.".to_string())?
         .remove(&app_id);
+    if let Ok(mut reattached) = state.reattached_app_ids.lock() {
+        reattached.remove(&app_id);
+    }
+    if let Ok(mut attempts) = state.reattach_attempt_pids.lock() {
+        attempts.remove(&app_id);
+    }
     Ok(())
 }
 
@@ -420,9 +745,15 @@ async fn start_by_id(
             .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
         if let Some(pid) = runtimes.get(app_id).copied() {
             if is_process_alive(pid) {
+                let reattached = state
+                    .reattached_app_ids
+                    .lock()
+                    .map(|items| items.contains(app_id))
+                    .unwrap_or(false);
                 return Ok(ManagedRuntime {
                     app_id: app_id.to_string(),
                     root_pid: pid,
+                    reattached,
                 });
             }
             runtimes.remove(app_id);
@@ -467,6 +798,12 @@ async fn start_by_id(
         .lock()
         .map_err(|_| "Runtime registry lock is poisoned.".to_string())?
         .insert(app.id.clone(), pid);
+    if let Ok(mut reattached) = state.reattached_app_ids.lock() {
+        reattached.remove(&app.id);
+    }
+    if let Ok(mut attempts) = state.reattach_attempt_pids.lock() {
+        attempts.remove(&app.id);
+    }
 
     diagnostics.record(
         "INFO",
@@ -501,29 +838,67 @@ async fn start_by_id(
     Ok(ManagedRuntime {
         app_id: app.id,
         root_pid: pid,
+        reattached: false,
     })
 }
 
-fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
+async fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
     let pid = state
         .runtime_pids
         .lock()
         .map_err(|_| "Runtime registry lock is poisoned.".to_string())?
         .get(app_id)
         .copied()
-        .ok_or_else(|| {
-            "This app was not started by Port Lens in the current session.".to_string()
-        })?;
+        .ok_or_else(|| "This app is not attached to a Port Lens managed runtime.".to_string())?;
+    let reattached = state
+        .reattached_app_ids
+        .lock()
+        .map_err(|_| "Reattached runtime registry lock is poisoned.".to_string())?
+        .contains(app_id);
 
     if is_process_alive(pid) {
-        state
-            .expected_exit_pids
-            .lock()
-            .map_err(|_| "Expected-exit registry lock is poisoned.".to_string())?
-            .insert(pid);
-        if let Err(error) = terminate_tree(pid) {
-            if let Ok(mut expected) = state.expected_exit_pids.lock() {
-                expected.remove(&pid);
+        if reattached {
+            let app = state
+                .apps
+                .lock()
+                .map_err(|_| "App registry lock is poisoned.".to_string())?
+                .iter()
+                .find(|item| item.id == app_id)
+                .cloned()
+                .ok_or_else(|| "App was not found.".to_string())?;
+            let ancestry = tauri::async_runtime::spawn_blocking(move || process_ancestry(pid))
+                .await
+                .map_err(|error| {
+                    format!("Runtime ownership verification worker failed: {error}")
+                })??;
+            if let Err(reason) = verify_saved_root_identity(&app, pid, &ancestry) {
+                if let Ok(mut runtimes) = state.runtime_pids.lock() {
+                    runtimes.remove(app_id);
+                }
+                if let Ok(mut reattached_ids) = state.reattached_app_ids.lock() {
+                    reattached_ids.remove(app_id);
+                }
+                clear_reattach_attempt(state, app_id);
+                return Err(format!(
+                    "Reattached runtime identity changed; Stop authority was revoked: {reason}"
+                ));
+            }
+        } else {
+            state
+                .expected_exit_pids
+                .lock()
+                .map_err(|_| "Expected-exit registry lock is poisoned.".to_string())?
+                .insert(pid);
+        }
+
+        let terminate_result = tauri::async_runtime::spawn_blocking(move || terminate_tree(pid))
+            .await
+            .map_err(|error| format!("Process termination worker failed: {error}"))?;
+        if let Err(error) = terminate_result {
+            if !reattached {
+                if let Ok(mut expected) = state.expected_exit_pids.lock() {
+                    expected.remove(&pid);
+                }
             }
             return Err(error);
         }
@@ -533,6 +908,10 @@ fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
         .lock()
         .map_err(|_| "Runtime registry lock is poisoned.".to_string())?
         .remove(app_id);
+    if let Ok(mut reattached_ids) = state.reattached_app_ids.lock() {
+        reattached_ids.remove(app_id);
+    }
+    clear_reattach_attempt(state, app_id);
     Ok(())
 }
 
@@ -566,12 +945,12 @@ async fn start_managed_app(
 }
 
 #[tauri::command]
-fn stop_managed_app(
+async fn stop_managed_app(
     app_id: String,
     state: State<'_, AppState>,
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<(), String> {
-    let result = stop_by_id(&app_id, &state);
+    let result = stop_by_id(&app_id, &state).await;
     record_failure(
         &diagnostics,
         "managed_action",
@@ -590,7 +969,7 @@ async fn restart_managed_app(
 ) -> Result<ManagedRuntime, String> {
     let diagnostics = diagnostics.inner().clone();
     let result = async {
-        stop_by_id(&app_id, &state)?;
+        stop_by_id(&app_id, &state).await?;
         tauri::async_runtime::spawn_blocking(|| thread::sleep(Duration::from_millis(300)))
             .await
             .map_err(|error| format!("Restart delay worker failed: {error}"))?;
@@ -866,6 +1245,10 @@ pub fn run() {
                         last_managed_pid: None,
                         last_managed_process_name: None,
                         last_managed_command_line: None,
+                        last_managed_listener_creation_time: None,
+                        last_managed_root_pid: None,
+                        last_managed_root_creation_time: None,
+                        last_managed_root_command_line: None,
                     });
                     changed = true;
                 }
@@ -1039,5 +1422,176 @@ mod tests {
             ..AppSettings::default()
         };
         assert_eq!(minimize_target(&tray), MinimizeTarget::Tray);
+    }
+
+    fn reattach_fixture() -> (ManagedApp, ListenerInfo, Vec<ProcessSnapshot>) {
+        let app = ManagedApp {
+            id: "api".into(),
+            name: "API".into(),
+            port: 3000,
+            command: Some("node server.js".into()),
+            cwd: Some(r"C:\app".into()),
+            last_process_name: Some("node".into()),
+            last_command_line: Some("node server.js".into()),
+            last_managed_pid: Some(4200),
+            last_managed_process_name: Some("node".into()),
+            last_managed_command_line: Some("node server.js".into()),
+            last_managed_listener_creation_time: Some("listener-created".into()),
+            last_managed_root_pid: Some(4100),
+            last_managed_root_creation_time: Some("root-created".into()),
+            last_managed_root_command_line: Some("cmd.exe /D /S /C node server.js".into()),
+        };
+        let listener = ListenerInfo {
+            protocol: "TCP".into(),
+            local_address: "0.0.0.0".into(),
+            port: 3000,
+            pid: 4200,
+            process_name: "node.exe".into(),
+            command_line: Some("node   server.js".into()),
+        };
+        let ancestry = vec![
+            ProcessSnapshot {
+                pid: 4200,
+                parent_pid: 4150,
+                process_name: "node.exe".into(),
+                command_line: Some("node server.js".into()),
+                creation_time: "listener-created".into(),
+            },
+            ProcessSnapshot {
+                pid: 4150,
+                parent_pid: 4100,
+                process_name: "pwsh.exe".into(),
+                command_line: Some("pwsh -File start.ps1".into()),
+                creation_time: "shell-created".into(),
+            },
+            ProcessSnapshot {
+                pid: 4100,
+                parent_pid: 4000,
+                process_name: "cmd.exe".into(),
+                command_line: Some("cmd.exe /D /S /C node server.js".into()),
+                creation_time: "root-created".into(),
+            },
+        ];
+        (app, listener, ancestry)
+    }
+
+    #[test]
+    fn reattach_requires_exact_persisted_process_generation_and_root_ancestry() {
+        let (app, listener, ancestry) = reattach_fixture();
+        assert_eq!(
+            verify_reattach_identity(&app, &listener, &ancestry),
+            Ok(4100)
+        );
+    }
+
+    #[test]
+    fn reattach_rejects_pid_reuse_via_creation_time() {
+        let (app, listener, mut ancestry) = reattach_fixture();
+        ancestry[0].creation_time = "different-generation".into();
+        assert!(verify_reattach_identity(&app, &listener, &ancestry)
+            .unwrap_err()
+            .contains("creation time changed"));
+    }
+
+    #[test]
+    fn reattach_rejects_listener_without_saved_root_in_ancestry() {
+        let (app, listener, mut ancestry) = reattach_fixture();
+        ancestry.pop();
+        assert!(verify_reattach_identity(&app, &listener, &ancestry)
+            .unwrap_err()
+            .contains("no longer an ancestor"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_managed_runtime_persistence_smoke() {
+        use std::fs;
+        use std::net::TcpListener;
+
+        let reservation = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let nonce = timestamp_millis();
+        let root = std::env::temp_dir().join(format!("port-lens-mac-smoke-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("server.mjs"),
+            format!(
+                "import http from 'node:http';\nhttp.createServer((_, r) => r.end('ok')).listen({port}, '127.0.0.1');\n"
+            ),
+        )
+        .unwrap();
+        let diagnostics = Diagnostics::new(root.join("logs")).unwrap();
+        let logs = diagnostics
+            .prepare_managed_logs("mac-smoke", "Mac Smoke")
+            .unwrap();
+        let mut child = spawn_managed("node server.mjs", root.to_str().unwrap(), &logs).unwrap();
+        let root_pid = child.id();
+
+        let listener = (0..40)
+            .find_map(|_| {
+                let found = ports::list_monitored(&[port])
+                    .ok()?
+                    .listeners
+                    .into_iter()
+                    .find(|item| item.port == port);
+                if found.is_none() {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                found
+            })
+            .expect("mock server should become a monitored listener");
+
+        let registry_path = root.join("managed-apps.json");
+        let state = AppState::load(registry_path.clone(), diagnostics.clone());
+        let mut app = ManagedApp {
+            id: "mac-smoke".into(),
+            name: "Mac Smoke".into(),
+            port,
+            command: Some("node server.mjs".into()),
+            cwd: Some(root.to_string_lossy().into_owned()),
+            last_process_name: None,
+            last_command_line: None,
+            last_managed_pid: None,
+            last_managed_process_name: None,
+            last_managed_command_line: None,
+            last_managed_listener_creation_time: None,
+            last_managed_root_pid: None,
+            last_managed_root_creation_time: None,
+            last_managed_root_command_line: None,
+        };
+        assert!(app.observe_listener(&listener, true));
+        state.persist_apps(std::slice::from_ref(&app)).unwrap();
+        drop(state);
+
+        let restarted = AppState::load(registry_path, diagnostics);
+        let restored = restarted.apps.lock().unwrap()[0].clone();
+        let current = ports::list_monitored(&[port])
+            .unwrap()
+            .listeners
+            .into_iter()
+            .find(|item| item.port == port)
+            .expect("listener should survive registry reload");
+        assert_eq!(restored.last_managed_pid, Some(current.pid));
+        assert_eq!(
+            normalized_process_name(restored.last_managed_process_name.as_deref().unwrap()),
+            normalized_process_name(&current.process_name)
+        );
+        assert_eq!(
+            normalized_command_line(restored.last_managed_command_line.as_deref().unwrap()),
+            normalized_command_line(current.command_line.as_deref().unwrap())
+        );
+        assert!(restarted.runtime_pids.lock().unwrap().is_empty());
+
+        terminate_tree(root_pid).unwrap();
+        let _ = child.wait();
+        for _ in 0..20 {
+            if ports::list_monitored(&[port]).unwrap().listeners.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(ports::list_monitored(&[port]).unwrap().listeners.is_empty());
+        let _ = fs::remove_dir_all(root);
     }
 }

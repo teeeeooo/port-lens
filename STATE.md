@@ -6,12 +6,14 @@ Last updated: 2026-09-11
 
 Port Lens v0.3.0 preview is a Tauri/Rust + React/TypeScript desktop app for discovering TCP listeners and managing selected local services.
 
-Latest validated implementation commit before these state docs: `300974e` (`fix: preserve managed app identity and Windows quoting`).
+Current merged baseline: `249d111` (PR #2, compact-position polish).
 
-Validated on GitHub CI:
-- macOS: PASS
-- Windows: PASS
-- Windows Bundle: PASS (`34573936844`)
+Active validation branch: `feature/runtime-reattach` at `afb6d3e`; PR #3 remains open pending manual Windows restart → Stop/Restart verification.
+
+Validated on GitHub CI for the active branch:
+- macOS: PASS (`34595188904`)
+- Windows: PASS (`34595188904`)
+- Windows Bundle: PASS (`34595549143`)
 
 Manual Windows validation completed for:
 - responsive listener discovery and tray interaction
@@ -38,23 +40,23 @@ Port Lens records managed root PID, exit code, elapsed runtime, expected/unexpec
 
 When Port Lens starts an App and observes its listener, it persists managed identity metadata. After Port Lens itself restarts, a matching surviving listener is recognized as previously managed instead of being reported as a different process.
 
-For safety, Stop / Restart ownership is still session-local. A previously managed listener recognized after Port Lens restarts is monitored and can be opened, but is not yet reattached for Stop / Restart.
+On the merged baseline, Stop / Restart ownership is still session-local. On the active `feature/runtime-reattach` branch, Windows can recover lifecycle authority only after verifying the persisted listener generation and managed root process identity; reattached Stop re-verifies root identity immediately before termination.
 
 ## Compact mode
 
 Compact mode is enabled by default. Minimize enters the floating compact monitor; disabling Compact mode makes Minimize hide to tray. Close exits the application.
 
-Current Port Lens compact positioning clamps to the monitor work area with a forced 12 px edge margin. On Windows this leaves a visible gap above the taskbar. Token Lens uses a different Windows policy; Port Lens will be polished separately rather than changing this baseline during the stability merge.
+Compact positioning clamps to the monitor work area. Windows now uses a 0 px edge margin so the bubble can sit directly against the work-area/taskbar boundary without covering the taskbar. Non-Windows desktop builds retain the existing 12 px edge margin.
 
 ## Windows package evidence
 
-Latest Windows Bundle run: `34573936844`.
+Latest active-branch package evidence: runtime-reattach bundle run `34595549143` at `afb6d3e` (PASS).
 
 - Portable: `Port.Lens_0.3.0_x64-portable.exe`
-  - SHA-256 `6b1a42e245f7a05da5657f32135140c3302a63a73bea90700ae34c1e5d3e8428`
+  - SHA-256 `18d5425f3b0b1d69a2eeb2787734305a7559ed37aa08e0b679beaa296e2c2a61`
 - MSI: `Port Lens_0.3.0_x64_en-US.msi`
-  - SHA-256 `a26b19cbde325815bfdb166798fffd1f42d4d575c4132a9fae540a841d8dda08`
+  - SHA-256 `5d8dfdaf6a1889b258cc0c734eb8f7383631a3e868d998b45f30aacc64dbe333`
 - NSIS: `Port Lens_0.3.0_x64-setup.exe`
-  - SHA-256 `4f101ae911160e468e449bdf4377ab7b77f5ccbc7dddc19e2fc6439fd6eda324`
+  - SHA-256 `b52e5c23833ce5e11f7efae66c7215ad4f0d9946f32c08b07b8870a440afc5a2`
 
-The preceding bundle run `34571634102` failed only while downloading an NSIS utility with Windows socket error 10054; the unchanged code path succeeded on the next run.
+Latest merged-baseline package evidence remains compact-position bundle run `34578926043` (PASS).
