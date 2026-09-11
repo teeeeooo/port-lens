@@ -32,7 +32,7 @@ Suggested branch: `feature/compact-position-polish`
 
 ## 2. Verified managed runtime reattach
 
-Status: implemented on `feature/runtime-reattach`; macOS common-path smoke passes. Awaiting refreshed native Windows CI/package and manual restart → Stop/Restart verification before merge.
+Status: implemented on `feature/runtime-reattach`; macOS common-path smoke passes. Native macOS/Windows CI and refreshed Windows packaging pass at `afb6d3e`; awaiting only manual Windows restart → Stop/Restart verification before merge.
 
 Goal: restore safe Stop / Restart control for a server that was started by Port Lens, survived Port Lens exit, and is rediscovered after Port Lens restarts.
 
