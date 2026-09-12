@@ -1,6 +1,6 @@
 # Port Lens Backlog
 
-Last updated: 2026-09-11
+Last updated: 2026-09-12
 
 Items are ordered by intended implementation sequence after the current stability merge.
 
@@ -65,6 +65,29 @@ Acceptance criteria:
 
 Suggested branch: `feature/runtime-reattach`
 
+## 3. Compact hover App list
+
+Status: implemented on stacked branch `feature/compact-app-hover` via PR #4; awaiting combined Windows CI/package and one-pass manual Windows validation with PR #3.
+
+Goal: show a lightweight registered-App status list when the user hovers over the compact bubble.
+
+Implemented behavior:
+- hover expands the native compact window upward after a short delay
+- each registered App shows only its name and a status dot
+- green means the expected App listener is online; gray covers Offline, Starting, or Different-process states
+- visible height is capped at 8 Apps; additional Apps remain scrollable
+- hover close restores the original compact position instead of persisting a transient expanded position
+- the list is display-only: no Start / Stop / Restart / Open controls are added
+- PR #4 is stacked on PR #3 so one Windows Portable can validate both feature sets together
+
+Merge order:
+- validate the combined Portable once on Windows
+- merge PR #3 first
+- retarget PR #4 to `main`
+- confirm PR #4 diff contains only compact-hover changes, rerun CI, then merge
+
+Suggested branch: `feature/compact-app-hover`
+
 ## Deferred housekeeping
 
-After the two items above stabilize, review version bump/release notes and decide whether the next packaged release remains 0.3.x or advances based on accumulated feature scope.
+After the active items above stabilize, review version bump/release notes and decide whether the next packaged release remains 0.3.x or advances based on accumulated feature scope.

@@ -1,6 +1,6 @@
 # Port Lens State
 
-Last updated: 2026-09-11
+Last updated: 2026-09-12
 
 ## Current baseline
 
@@ -8,12 +8,14 @@ Port Lens v0.3.0 preview is a Tauri/Rust + React/TypeScript desktop app for disc
 
 Current merged baseline: `249d111` (PR #2, compact-position polish).
 
-Active validation branch: `feature/runtime-reattach` at `afb6d3e`; PR #3 remains open pending manual Windows restart → Stop/Restart verification.
+Runtime-reattach parent branch: `feature/runtime-reattach` at `e46c538`; PR #3 remains open pending manual Windows restart → Stop/Restart verification.
 
-Validated on GitHub CI for the active branch:
-- macOS: PASS (`34595188904`)
-- Windows: PASS (`34595188904`)
-- Windows Bundle: PASS (`34595549143`)
+Stacked validation branch: `feature/compact-app-hover` at `767227f`; PR #4 targets PR #3 so one combined Windows Portable can validate both features before either merge.
+
+Validated parent-branch evidence:
+- macOS: PASS (`34597065813`)
+- Windows: PASS (`34597065813`)
+- Windows Bundle: PASS (`34597087024`)
 
 Manual Windows validation completed for:
 - responsive listener discovery and tray interaction
@@ -47,6 +49,8 @@ On the merged baseline, Stop / Restart ownership is still session-local. On the 
 Compact mode is enabled by default. Minimize enters the floating compact monitor; disabling Compact mode makes Minimize hide to tray. Close exits the application.
 
 Compact positioning clamps to the monitor work area. Windows now uses a 0 px edge margin so the bubble can sit directly against the work-area/taskbar boundary without covering the taskbar. Non-Windows desktop builds retain the existing 12 px edge margin.
+
+On stacked PR #4, hovering the compact bubble expands the native window upward and shows the registered App list with green/gray status dots. Up to 8 rows are visible before scrolling; closing hover restores the pre-hover compact position.
 
 ## Windows package evidence
 
