@@ -42,9 +42,7 @@ html.bubble-mode #root {
   width: 100vw;
   height: 100vh;
   display: flex;
-  align-items: center;
-  gap: calc(5px * var(--bubble-scale));
-  padding: calc(5px * var(--bubble-scale));
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: #101828;
@@ -55,6 +53,58 @@ html.bubble-mode #root {
 }
 
 .bubble-shell.dragging { cursor: grabbing; }
+
+.bubble-bar {
+  width: 100%;
+  min-height: calc(44px * var(--bubble-scale));
+  display: flex;
+  align-items: center;
+  gap: calc(5px * var(--bubble-scale));
+  padding: calc(5px * var(--bubble-scale));
+  margin-top: auto;
+}
+
+.bubble-app-list {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: calc(4px * var(--bubble-scale)) calc(7px * var(--bubble-scale));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  cursor: default;
+}
+
+.bubble-app-row {
+  height: calc(28px * var(--bubble-scale));
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--bubble-scale));
+  min-width: 0;
+  padding: 0 calc(4px * var(--bubble-scale));
+  font-size: calc(11px * var(--bubble-scale));
+}
+
+.bubble-app-dot {
+  width: calc(8px * var(--bubble-scale));
+  height: calc(8px * var(--bubble-scale));
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #667085;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.bubble-app-dot.online {
+  background: #57b980;
+  box-shadow: 0 0 calc(5px * var(--bubble-scale)) rgba(87, 185, 128, 0.34);
+}
+
+.bubble-app-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #e4e9f1;
+}
 .bubble-shell button { cursor: pointer; }
 
 .bubble-shell button {
