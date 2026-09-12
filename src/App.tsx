@@ -14,6 +14,7 @@ import {
   killListenerProcess,
   minimizeMainWindow,
   moveCompactBubble,
+  setCompactHover,
   openLogs,
   openManagedAppLogs,
   removeManagedApp,
@@ -141,6 +142,10 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
+  const [bubbleHoverExpanded, setBubbleHoverExpanded] = useState(false);
+  const bubbleHoverDesired = useRef(false);
+  const bubbleHoverOpenTimer = useRef<number | undefined>(undefined);
+  const bubbleHoverCloseTimer = useRef<number | undefined>(undefined);
   const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedStateEpoch = useRef(0);
@@ -269,8 +274,17 @@ function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle("bubble-mode", bubbleMode);
+    if (!bubbleMode) {
+      bubbleHoverDesired.current = false;
+      setBubbleHoverExpanded(false);
+    }
     return () => document.documentElement.classList.remove("bubble-mode");
   }, [bubbleMode]);
+
+  useEffect(() => () => {
+    if (bubbleHoverOpenTimer.current !== undefined) window.clearTimeout(bubbleHoverOpenTimer.current);
+    if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
+  }, []);
 
   useEffect(() => {
     if (isDevMockMode) return;
@@ -416,15 +430,57 @@ function App() {
 
   const expandBubble = async () => {
     try {
+      bubbleHoverDesired.current = false;
       const state = await expandFromBubble();
+      setBubbleHoverExpanded(false);
       setBubbleMode(state.collapsed);
     } catch (bubbleError) {
       setError(messageOf(bubbleError));
     }
   };
 
+  const beginBubbleHover = () => {
+    bubbleHoverDesired.current = true;
+    if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
+    if (bubbleHoverExpanded || apps.length === 0) return;
+    if (bubbleHoverOpenTimer.current !== undefined) window.clearTimeout(bubbleHoverOpenTimer.current);
+    bubbleHoverOpenTimer.current = window.setTimeout(() => {
+      bubbleHoverOpenTimer.current = undefined;
+      void setCompactHover(apps.length)
+        .then((state) => {
+          if (!bubbleHoverDesired.current) {
+            void setCompactHover(0);
+            return;
+          }
+          if (state.collapsed) setBubbleHoverExpanded(true);
+        })
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    }, 250);
+  };
+
+  const endBubbleHover = () => {
+    bubbleHoverDesired.current = false;
+    if (bubbleHoverOpenTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverOpenTimer.current);
+      bubbleHoverOpenTimer.current = undefined;
+    }
+    if (!bubbleHoverExpanded) return;
+    if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
+    bubbleHoverCloseTimer.current = window.setTimeout(() => {
+      bubbleHoverCloseTimer.current = undefined;
+      void setCompactHover(0)
+        .then(() => setBubbleHoverExpanded(false))
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    }, 140);
+  };
+
   const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || (event.target as Element).closest("button")) return;
+    if (event.button !== 0 || bubbleHoverExpanded || (event.target as Element).closest("button, .bubble-app-list")) return;
+    bubbleHoverDesired.current = false;
+    if (bubbleHoverOpenTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverOpenTimer.current);
+      bubbleHoverOpenTimer.current = undefined;
+    }
     const rect = event.currentTarget.getBoundingClientRect();
     bubbleDrag.current = {
       pointerId: event.pointerId,
@@ -565,28 +621,45 @@ function App() {
   if (bubbleMode) {
     return (
       <main
-        className="bubble-shell"
+        className={`bubble-shell ${bubbleHoverExpanded ? "hover-expanded" : ""}`}
         aria-label="Port Lens compact monitor"
-        title="Drag to move · Click to open"
+        title={bubbleHoverExpanded ? undefined : "Drag to move · Hover for Apps · Click to open"}
+        onMouseEnter={beginBubbleHover}
+        onMouseLeave={endBubbleHover}
         onPointerDown={beginBubbleDrag}
         onPointerMove={moveBubbleDrag}
         onPointerUp={finishBubbleDrag}
         onPointerCancel={cancelBubbleDrag}
       >
-        <div className="bubble-grip" aria-hidden="true">
-          <img src="/port-lens.svg" alt="" />
+        {bubbleHoverExpanded && (
+          <div className="bubble-app-list" aria-label="Registered Apps">
+            {managedRows.map((app) => {
+              const online = Boolean(app.listener && !app.identityChanged);
+              return (
+                <div className="bubble-app-row" key={app.id} title={app.name}>
+                  <span className={`bubble-app-dot ${online ? "online" : "offline"}`} aria-hidden="true" />
+                  <span className="bubble-app-name">{app.name}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div className="bubble-bar">
+          <div className="bubble-grip" aria-hidden="true">
+            <img src="/port-lens.svg" alt="" />
+          </div>
+          <div className="bubble-summary">
+            <span className={`status-dot ${onlineAppCount > 0 ? "running" : "stopped"}`} />
+            <strong>{onlineAppCount}/{apps.length}</strong>
+            <span>apps</span>
+            <span className="bubble-divider" />
+            <strong>{listeners.length}</strong>
+            <span>ports</span>
+          </div>
+          <button className="bubble-expand" onClick={() => void expandBubble()} aria-label="Expand Port Lens" title="Expand">
+            Open
+          </button>
         </div>
-        <div className="bubble-summary">
-          <span className={`status-dot ${onlineAppCount > 0 ? "running" : "stopped"}`} />
-          <strong>{onlineAppCount}/{apps.length}</strong>
-          <span>apps</span>
-          <span className="bubble-divider" />
-          <strong>{listeners.length}</strong>
-          <span>ports</span>
-        </div>
-        <button className="bubble-expand" onClick={() => void expandBubble()} aria-label="Expand Port Lens" title="Expand">
-          Open
-        </button>
       </main>
     );
   }

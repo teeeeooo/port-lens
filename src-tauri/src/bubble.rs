@@ -5,6 +5,9 @@ use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow}
 
 const BUBBLE_WIDTH: f64 = 276.0;
 const BUBBLE_HEIGHT: f64 = 46.0;
+const HOVER_ROW_HEIGHT: f64 = 28.0;
+const HOVER_LIST_PADDING: f64 = 8.0;
+const MAX_HOVER_ROWS: u32 = 8;
 const DESKTOP_EDGE_MARGIN: i32 = 12;
 const MIN_WIDTH: f64 = 800.0;
 const MIN_HEIGHT: f64 = 580.0;
@@ -33,11 +36,25 @@ impl CompactPositionPolicy {
 }
 
 fn bubble_physical_size(bubble_scale: f64, monitor_scale: f64) -> PhysicalSize<u32> {
+    bubble_physical_size_for_rows(bubble_scale, monitor_scale, 0)
+}
+
+fn bubble_physical_size_for_rows(
+    bubble_scale: f64,
+    monitor_scale: f64,
+    rows: u32,
+) -> PhysicalSize<u32> {
+    let visible_rows = rows.min(MAX_HOVER_ROWS);
+    let hover_height = if visible_rows == 0 {
+        0.0
+    } else {
+        HOVER_LIST_PADDING + HOVER_ROW_HEIGHT * visible_rows as f64
+    };
     PhysicalSize::new(
         (BUBBLE_WIDTH * bubble_scale * monitor_scale)
             .round()
             .max(1.0) as u32,
-        (BUBBLE_HEIGHT * bubble_scale * monitor_scale)
+        ((BUBBLE_HEIGHT + hover_height) * bubble_scale * monitor_scale)
             .round()
             .max(1.0) as u32,
     )
@@ -54,6 +71,8 @@ struct ExpandedWindow {
 #[derive(Debug, Default)]
 struct BubbleState {
     collapsed: bool,
+    hover_rows: u32,
+    hover_origin: Option<PhysicalPosition<i32>>,
     expanded: Option<ExpandedWindow>,
 }
 
@@ -131,6 +150,20 @@ fn clamp_position(
         desired_x,
         desired_y,
         CompactPositionPolicy::current().edge_margin(),
+    )
+}
+
+fn bottom_anchored_position(
+    monitor: &Monitor,
+    position: PhysicalPosition<i32>,
+    old_size: PhysicalSize<u32>,
+    new_size: PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    clamp_position(
+        monitor,
+        new_size,
+        position.x as i64,
+        position.y as i64 + old_size.height as i64 - new_size.height as i64,
     )
 }
 
@@ -224,6 +257,8 @@ pub fn collapse(
         x: target.x,
         y: target.y,
     })?;
+    state.hover_rows = 0;
+    state.hover_origin = None;
     state.collapsed = true;
     Ok(BubblePayload { collapsed: true })
 }
@@ -258,6 +293,64 @@ pub fn resize_collapsed(
         x: target.x,
         y: target.y,
     })
+}
+
+pub fn set_hover_rows(
+    window: &WebviewWindow,
+    controller: &BubbleController,
+    settings: &SettingsStore,
+    rows: u32,
+) -> Result<BubblePayload, String> {
+    let (current_rows, hover_origin) = {
+        let state = controller
+            .state
+            .lock()
+            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
+        if !state.collapsed {
+            return Ok(BubblePayload { collapsed: false });
+        }
+        (state.hover_rows, state.hover_origin)
+    };
+    let next_rows = rows.min(MAX_HOVER_ROWS);
+    if current_rows == next_rows {
+        return current(controller);
+    }
+
+    let current_settings = settings.get()?;
+    let position = window.outer_position().map_err(window_error)?;
+    let old_size = window.outer_size().map_err(window_error)?;
+    let center_x = position.x as f64 + old_size.width as f64 / 2.0;
+    let center_y = position.y as f64 + old_size.height as f64 / 2.0;
+    let monitor = window
+        .monitor_from_point(center_x, center_y)
+        .map_err(window_error)?
+        .or_else(|| window.current_monitor().ok().flatten())
+        .ok_or_else(|| "No monitor is available for compact hover.".to_string())?;
+    let new_size = bubble_physical_size_for_rows(
+        current_settings.bubble_scale,
+        monitor.scale_factor(),
+        next_rows,
+    );
+    let target = if next_rows == 0 {
+        let origin = hover_origin.unwrap_or(position);
+        clamp_position(&monitor, new_size, origin.x as i64, origin.y as i64)
+    } else {
+        bottom_anchored_position(&monitor, position, old_size, new_size)
+    };
+    apply_collapsed_window(window, target, new_size)?;
+
+    let mut state = controller
+        .state
+        .lock()
+        .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
+    if current_rows == 0 && next_rows > 0 {
+        state.hover_origin = Some(position);
+    } else if next_rows == 0 {
+        state.hover_origin = None;
+    }
+    state.hover_rows = next_rows;
+    drop(state);
+    current(controller)
 }
 
 pub fn move_to_cursor(
@@ -345,6 +438,8 @@ pub fn expand(
     if focus {
         window.set_focus().map_err(window_error)?;
     }
+    state.hover_rows = 0;
+    state.hover_origin = None;
     state.collapsed = false;
     Ok(BubblePayload { collapsed: false })
 }
@@ -358,6 +453,22 @@ mod tests {
         assert_eq!(bubble_physical_size(0.7, 2.0), PhysicalSize::new(386, 64));
         assert_eq!(bubble_physical_size(1.0, 1.0), PhysicalSize::new(276, 46));
         assert_eq!(bubble_physical_size(1.5, 1.0), PhysicalSize::new(414, 69));
+    }
+
+    #[test]
+    fn hover_size_grows_for_apps_and_caps_at_eight_rows() {
+        assert_eq!(
+            bubble_physical_size_for_rows(1.0, 1.0, 3),
+            PhysicalSize::new(276, 138)
+        );
+        assert_eq!(
+            bubble_physical_size_for_rows(1.0, 1.0, 8),
+            PhysicalSize::new(276, 278)
+        );
+        assert_eq!(
+            bubble_physical_size_for_rows(1.0, 1.0, 20),
+            PhysicalSize::new(276, 278)
+        );
     }
 
     #[test]

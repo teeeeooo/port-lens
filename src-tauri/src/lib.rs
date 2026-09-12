@@ -1173,6 +1173,16 @@ fn move_compact_bubble(
 }
 
 #[tauri::command]
+fn set_compact_hover(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+    settings: State<'_, SettingsStore>,
+    rows: u32,
+) -> Result<bubble::BubblePayload, String> {
+    bubble::set_hover_rows(&window, &controller, &settings, rows)
+}
+
+#[tauri::command]
 fn expand_from_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
@@ -1402,6 +1412,7 @@ pub fn run() {
             collapse_to_bubble,
             minimize_main_window,
             move_compact_bubble,
+            set_compact_hover,
             expand_from_bubble
         ])
         .run(tauri::generate_context!())

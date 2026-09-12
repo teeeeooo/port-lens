@@ -89,6 +89,11 @@ export const moveCompactBubble = (offsetRatioX: number, offsetRatioY: number, pe
         offset: { offsetRatioX, offsetRatioY, persist },
       });
 
+export const setCompactHover = (rows: number) =>
+  isDevMockMode
+    ? Promise.resolve(mockBubbleState())
+    : invoke<BubbleState>("set_compact_hover", { rows });
+
 export const expandFromBubble = () =>
   isDevMockMode
     ? Promise.resolve<BubbleState>({ collapsed: false })
