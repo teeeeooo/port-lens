@@ -13,6 +13,7 @@ pub struct AppState {
     pub runtime_pids: Mutex<HashMap<String, u32>>,
     pub reattached_app_ids: Mutex<HashSet<String>>,
     pub reattach_attempt_pids: Mutex<HashMap<String, u32>>,
+    pub reattach_suppressed_app_ids: Mutex<HashSet<String>>,
     pub expected_exit_pids: Mutex<HashSet<u32>>,
     pub last_exits: Mutex<HashMap<String, ManagedExitInfo>>,
 }
@@ -41,6 +42,7 @@ impl AppState {
             runtime_pids: Mutex::new(HashMap::new()),
             reattached_app_ids: Mutex::new(HashSet::new()),
             reattach_attempt_pids: Mutex::new(HashMap::new()),
+            reattach_suppressed_app_ids: Mutex::new(HashSet::new()),
             expected_exit_pids: Mutex::new(HashSet::new()),
             last_exits: Mutex::new(HashMap::new()),
         }

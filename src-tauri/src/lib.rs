@@ -196,6 +196,27 @@ fn clear_reattach_attempt(state: &AppState, app_id: &str) {
     }
 }
 
+fn set_reattach_suppressed(state: &AppState, app_id: &str, suppressed: bool) -> Result<(), String> {
+    let mut app_ids = state
+        .reattach_suppressed_app_ids
+        .lock()
+        .map_err(|_| "Reattach suppression registry lock is poisoned.".to_string())?;
+    if suppressed {
+        app_ids.insert(app_id.to_string());
+    } else {
+        app_ids.remove(app_id);
+    }
+    Ok(())
+}
+
+fn is_reattach_suppressed(state: &AppState, app_id: &str) -> bool {
+    state
+        .reattach_suppressed_app_ids
+        .lock()
+        .map(|app_ids| app_ids.contains(app_id))
+        .unwrap_or(true)
+}
+
 fn retryable_reattach_rejection(reason: &str) -> bool {
     matches!(
         reason,
@@ -212,7 +233,7 @@ async fn attempt_runtime_reattach(
     app: ManagedApp,
     listener: ListenerInfo,
 ) {
-    if cfg!(not(target_os = "windows")) {
+    if cfg!(not(target_os = "windows")) || is_reattach_suppressed(state, &app.id) {
         return;
     }
     if listener
@@ -296,6 +317,17 @@ async fn attempt_runtime_reattach(
             "INFO",
             "runtime_reattach_rejected",
             format!("appId={} rootPid={root_pid} reason=root-not-alive", app.id),
+        );
+        return;
+    }
+    if is_reattach_suppressed(state, &app.id) {
+        diagnostics.record(
+            "INFO",
+            "runtime_reattach_suppressed",
+            format!(
+                "appId={} listenerPid={listener_pid} rootPid={root_pid}",
+                app.id
+            ),
         );
         return;
     }
@@ -729,6 +761,9 @@ fn remove_managed_app(app_id: String, state: State<'_, AppState>) -> Result<(), 
     if let Ok(mut attempts) = state.reattach_attempt_pids.lock() {
         attempts.remove(&app_id);
     }
+    if let Ok(mut suppressed) = state.reattach_suppressed_app_ids.lock() {
+        suppressed.remove(&app_id);
+    }
     Ok(())
 }
 
@@ -950,7 +985,14 @@ async fn stop_managed_app(
     state: State<'_, AppState>,
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<(), String> {
+    set_reattach_suppressed(&state, &app_id, true)?;
     let result = stop_by_id(&app_id, &state).await;
+    let release_result = set_reattach_suppressed(&state, &app_id, false);
+    let result = match (result, release_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+    };
     record_failure(
         &diagnostics,
         "managed_action",
@@ -968,6 +1010,7 @@ async fn restart_managed_app(
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<ManagedRuntime, String> {
     let diagnostics = diagnostics.inner().clone();
+    set_reattach_suppressed(&state, &app_id, true)?;
     let result = async {
         stop_by_id(&app_id, &state).await?;
         tauri::async_runtime::spawn_blocking(|| thread::sleep(Duration::from_millis(300)))
@@ -976,6 +1019,12 @@ async fn restart_managed_app(
         start_by_id(&app_id, &state, diagnostics.clone(), &app_handle).await
     }
     .await;
+    let release_result = set_reattach_suppressed(&state, &app_id, false);
+    let result = match (result, release_result) {
+        (Ok(runtime), Ok(())) => Ok(runtime),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    };
     record_failure(
         &diagnostics,
         "managed_action",
@@ -1500,6 +1549,21 @@ mod tests {
         assert!(verify_reattach_identity(&app, &listener, &ancestry)
             .unwrap_err()
             .contains("no longer an ancestor"));
+    }
+
+    #[test]
+    fn lifecycle_suppression_blocks_reattach_gate_until_released() {
+        let root = std::env::temp_dir().join(format!("port-lens-suppress-{}", timestamp_millis()));
+        let diagnostics = Diagnostics::new(root.join("logs")).unwrap();
+        let state = AppState::load(root.join("managed-apps.json"), diagnostics);
+
+        assert!(!is_reattach_suppressed(&state, "api"));
+        set_reattach_suppressed(&state, "api", true).unwrap();
+        assert!(is_reattach_suppressed(&state, "api"));
+        set_reattach_suppressed(&state, "api", false).unwrap();
+        assert!(!is_reattach_suppressed(&state, "api"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(target_os = "macos")]
