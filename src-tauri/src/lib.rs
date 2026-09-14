@@ -23,7 +23,15 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 
 #[cfg(windows)]
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::{
+    Foundation::{LPARAM, WPARAM},
+    UI::{
+        Input::KeyboardAndMouse::ReleaseCapture,
+        WindowsAndMessaging::{
+            SendMessageW, ShowWindowAsync, HTCAPTION, SW_HIDE, WM_NCLBUTTONDOWN,
+        },
+    },
+};
 
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
@@ -1241,66 +1249,97 @@ fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn left_mouse_button_down() -> bool {
-    unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
+fn pack_screen_point(x: i32, y: i32) -> LPARAM {
+    let packed = (x as u32 & 0xffff) | ((y as u32 & 0xffff) << 16);
+    LPARAM(packed as i32 as isize)
 }
 
 #[cfg(windows)]
-fn finish_compact_drag_when_released(window: WebviewWindow) {
-    let app = window.app_handle().clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(16)).await;
-        while left_mouse_button_down() {
-            tokio::time::sleep(Duration::from_millis(16)).await;
-        }
+fn start_windows_compact_drag(
+    window: &WebviewWindow,
+    offset_ratio_x: f64,
+    offset_ratio_y: f64,
+) -> Result<(), String> {
+    let position = window
+        .outer_position()
+        .map_err(|error| format!("Failed to read compact position before drag: {error}"))?;
+    let size = window
+        .outer_size()
+        .map_err(|error| format!("Failed to read compact size before drag: {error}"))?;
+    let ratio_x = offset_ratio_x.clamp(0.0, 1.0);
+    let ratio_y = offset_ratio_y.clamp(0.0, 1.0);
+    let click_x = position.x + (ratio_x * size.width.saturating_sub(1) as f64).round() as i32;
+    let click_y = position.y + (ratio_y * size.height.saturating_sub(1) as f64).round() as i32;
 
-        let main_app = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            let Some(window) = main_app.get_webview_window("main") else {
-                return;
-            };
-            let controller = main_app.state::<bubble::BubbleController>();
-            let settings = main_app.state::<SettingsStore>();
-            if bubble::is_collapsed(&controller).unwrap_or(false) {
-                if let Err(error) =
-                    bubble::persist_compact_position(&window, &controller, &settings)
-                {
-                    main_app.state::<Diagnostics>().record(
-                        "WARN",
-                        "compact_drag_persist",
-                        format!("error={error}"),
-                    );
-                }
+    if let Some(hover) = window.app_handle().get_webview_window("compact-hover") {
+        if let Ok(hwnd) = hover.hwnd() {
+            unsafe {
+                let _ = ShowWindowAsync(hwnd, SW_HIDE);
             }
-            let _ = bubble::set_native_move_active(&controller, false);
-        });
-    });
+        }
+    }
+
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("Failed to resolve compact HWND: {error}"))?;
+    unsafe {
+        let _ = ReleaseCapture();
+        SendMessageW(
+            hwnd,
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(HTCAPTION as usize)),
+            Some(pack_screen_point(click_x, click_y)),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn start_compact_drag(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
+    _settings: State<'_, SettingsStore>,
+    offset_ratio_x: f64,
+    offset_ratio_y: f64,
 ) -> Result<(), String> {
     if !bubble::is_collapsed(&controller)? {
         return Err("Compact drag is only available while the compact monitor is active.".into());
     }
 
     bubble::set_native_move_active(&controller, true)?;
-    if let Err(error) = bubble::hide_hover_panel(&window) {
+    let drag_result = {
+        #[cfg(windows)]
+        {
+            start_windows_compact_drag(&window, offset_ratio_x, offset_ratio_y)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (offset_ratio_x, offset_ratio_y);
+            bubble::hide_hover_panel(&window)?;
+            window
+                .start_dragging()
+                .map_err(|error| format!("Failed to start native compact drag: {error}"))
+        }
+    };
+
+    if let Err(error) = drag_result {
         let _ = bubble::set_native_move_active(&controller, false);
         return Err(error);
     }
-    if let Err(error) = window.start_dragging() {
-        let _ = bubble::set_native_move_active(&controller, false);
-        return Err(format!("Failed to start native compact drag: {error}"));
-    }
 
     #[cfg(windows)]
-    finish_compact_drag_when_released(window);
+    let persist_result: Result<(), String> =
+        bubble::persist_compact_position(&window, &controller, &_settings);
     #[cfg(not(windows))]
-    bubble::set_native_move_active(&controller, false)?;
-    Ok(())
+    let persist_result: Result<(), String> = Ok(());
+
+    let release_result = bubble::set_native_move_active(&controller, false);
+    let _ = window
+        .app_handle()
+        .emit_to("main", "port-lens://compact-drag-ended", ());
+
+    persist_result?;
+    release_result
 }
 
 #[tauri::command]

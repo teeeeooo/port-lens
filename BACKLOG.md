@@ -58,9 +58,10 @@ Implemented behavior:
 - hover data is reused from the main monitoring state; the panel does not run its own listener/process scan
 - a render revision handshake prevents the native hover window from being shown before its requested DOM is committed
 - compact drag starts through one immediate `start_compact_drag` command on mouse-down; the 4 px threshold and pointer capture remain removed
-- that command hides the hover window once, suspends the taskbar keeper, and delegates movement to Tauri/Windows native `start_dragging()`
-- repeated pointermove IPC, cursor polling, manual per-frame `SetWindowPos`, and per-`Moved` hover `hide()` calls have been removed
-- Windows compact `Moved`/`Resized` callbacks do no drag-time persistence or native window work; final position is persisted once after left-button release, then z-order protection resumes
+- the frontend passes the original grab-point ratios, so Windows reconstructs the physical click point even if the cursor moves before the backend command is handled
+- Windows hides the hover HWND asynchronously and enters the native move loop synchronously with `WM_NCLBUTTONDOWN(HTCAPTION)`, bypassing Tauri/Tao `start_dragging()`, delayed `GetCursorPos()`, and queued `PostMessageW`
+- repeated pointermove IPC, manual per-frame `SetWindowPos`, and per-`Moved` hover `hide()` calls remain removed
+- Windows compact `Moved`/`Resized` callbacks do no drag-time persistence or native window work; final position is persisted once when the Win32 move loop returns, then z-order protection resumes
 - the compact WebView surface uses rounded `clip-path` clipping on both shell and bar, restoring all four rounded corners
 - main-window startup defaults to 1020×680 and clamps both saved/default bounds into the active monitor work area
 - frontend state-dependent commands are blocked behind a startup-ready gate until all backend managed state is installed

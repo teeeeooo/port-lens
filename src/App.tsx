@@ -745,7 +745,12 @@ function App() {
           onMouseDown={(event) => {
             if ((event.target as Element).closest("button")) return;
             prepareNativeBubbleDrag();
-            void startCompactDrag().catch((bubbleError) => setError(messageOf(bubbleError)));
+            const width = window.innerWidth || 1;
+            const height = window.innerHeight || 1;
+            void startCompactDrag(
+              Math.max(0, Math.min(1, event.clientX / width)),
+              Math.max(0, Math.min(1, event.clientY / height)),
+            ).catch((bubbleError) => setError(messageOf(bubbleError)));
           }}
         >
           <div className="bubble-grip" aria-hidden="true">
