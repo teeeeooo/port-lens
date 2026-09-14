@@ -18,6 +18,9 @@ import {
 } from "./devMock";
 import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, SettingsPatch } from "./types";
 
+export const getStartupReady = () =>
+  isDevMockMode ? Promise.resolve(true) : invoke<boolean>("get_startup_ready");
+
 export const getListeners = () =>
   isDevMockMode ? mockGetListeners() : invoke<ListenerInfo[]>("get_listeners");
 
@@ -87,9 +90,6 @@ export const showCompactHover = (rows: number) =>
 
 export const hideCompactHover = () =>
   isDevMockMode ? Promise.resolve() : invoke<void>("hide_compact_hover");
-
-export const startCompactDrag = () =>
-  isDevMockMode ? Promise.resolve() : invoke<void>("start_compact_drag");
 
 export const expandFromBubble = () =>
   isDevMockMode

@@ -83,6 +83,7 @@ struct ExpandedWindow {
 #[derive(Debug, Default)]
 struct BubbleState {
     collapsed: bool,
+    native_move_active: bool,
     z_order_generation: u64,
     expanded: Option<ExpandedWindow>,
 }
@@ -112,6 +113,14 @@ pub fn is_collapsed(controller: &BubbleController) -> Result<bool, String> {
         .state
         .lock()
         .map(|state| state.collapsed)
+        .map_err(|_| "Bubble state lock is poisoned.".to_string())
+}
+
+pub fn set_native_move_active(controller: &BubbleController, active: bool) -> Result<(), String> {
+    controller
+        .state
+        .lock()
+        .map(|mut state| state.native_move_active = active)
         .map_err(|_| "Bubble state lock is poisoned.".to_string())
 }
 
@@ -349,14 +358,21 @@ fn start_taskbar_z_order_keeper(
     generation: u64,
 ) {
     thread::spawn(move || loop {
-        let keep_running = state
+        let (keep_running, native_move_active) = state
             .lock()
-            .map(|state| state.collapsed && state.z_order_generation == generation)
-            .unwrap_or(false);
+            .map(|state| {
+                (
+                    state.collapsed && state.z_order_generation == generation,
+                    state.native_move_active,
+                )
+            })
+            .unwrap_or((false, false));
         if !keep_running {
             break;
         }
-        let _ = refresh_taskbar_z_order(&window);
+        if !native_move_active {
+            let _ = refresh_taskbar_z_order(&window);
+        }
         thread::sleep(Duration::from_millis(250));
     });
 }
@@ -574,6 +590,7 @@ pub fn collapse(
     })?;
     state.z_order_generation = state.z_order_generation.wrapping_add(1);
     let generation = state.z_order_generation;
+    state.native_move_active = false;
     state.collapsed = true;
     drop(state);
     refresh_taskbar_z_order(window)?;
@@ -664,6 +681,7 @@ pub fn expand(
         window.set_focus().map_err(window_error)?;
     }
     state.z_order_generation = state.z_order_generation.wrapping_add(1);
+    state.native_move_active = false;
     state.collapsed = false;
     Ok(BubblePayload { collapsed: false })
 }

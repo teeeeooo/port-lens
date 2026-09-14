@@ -22,16 +22,63 @@ pub fn restore_initial(window: &WebviewWindow, settings: &AppSettings) -> Result
     window
         .set_min_size(Some(LogicalSize::new(MIN_WIDTH, MIN_HEIGHT)))
         .map_err(window_error)?;
-    let Some(bounds) = settings.expanded_bounds else {
+    if let Some(bounds) = settings.expanded_bounds {
+        window
+            .set_size(LogicalSize::new(bounds.width, bounds.height))
+            .map_err(window_error)?;
+        if saved_position_is_visible(window, bounds)? {
+            window
+                .set_position(PhysicalPosition::new(bounds.x, bounds.y))
+                .map_err(window_error)?;
+        }
+    }
+    fit_to_current_work_area(window)
+}
+
+fn fit_to_current_work_area(window: &WebviewWindow) -> Result<(), String> {
+    let Some(monitor) = window.current_monitor().map_err(window_error)? else {
         return Ok(());
     };
+    let work = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let outer = window.outer_size().map_err(window_error)?;
+    let inner = window.inner_size().map_err(window_error)?;
+    let frame_width = outer.width.saturating_sub(inner.width);
+    let frame_height = outer.height.saturating_sub(inner.height);
+    let max_inner_width = work.size.width.saturating_sub(frame_width).max(1);
+    let max_inner_height = work.size.height.saturating_sub(frame_height).max(1);
+    let max_logical =
+        tauri::PhysicalSize::new(max_inner_width, max_inner_height).to_logical::<f64>(scale);
     window
-        .set_size(LogicalSize::new(bounds.width, bounds.height))
+        .set_min_size(Some(LogicalSize::new(
+            MIN_WIDTH.min(max_logical.width),
+            MIN_HEIGHT.min(max_logical.height),
+        )))
         .map_err(window_error)?;
-    if saved_position_is_visible(window, bounds)? {
+    let target_inner_width = inner.width.min(max_inner_width);
+    let target_inner_height = inner.height.min(max_inner_height);
+
+    if target_inner_width != inner.width || target_inner_height != inner.height {
         window
-            .set_position(PhysicalPosition::new(bounds.x, bounds.y))
+            .set_size(
+                tauri::PhysicalSize::new(target_inner_width, target_inner_height)
+                    .to_logical::<f64>(scale),
+            )
             .map_err(window_error)?;
+    }
+
+    let outer = window.outer_size().map_err(window_error)?;
+    let position = window.outer_position().map_err(window_error)?;
+    let min_x = work.position.x as i64;
+    let min_y = work.position.y as i64;
+    let max_x = min_x + work.size.width as i64 - outer.width as i64;
+    let max_y = min_y + work.size.height as i64 - outer.height as i64;
+    let target = PhysicalPosition::new(
+        (position.x as i64).clamp(min_x, max_x.max(min_x)) as i32,
+        (position.y as i64).clamp(min_y, max_y.max(min_y)) as i32,
+    );
+    if target != position {
+        window.set_position(target).map_err(window_error)?;
     }
     Ok(())
 }
@@ -73,7 +120,13 @@ pub fn persist_now(window: &WebviewWindow) -> Result<(), String> {
     let controller = app.state::<BubbleController>();
     let settings = app.state::<SettingsStore>();
     if crate::bubble::is_collapsed(&controller)? {
-        return crate::bubble::persist_compact_position(window, &controller, &settings);
+        let result = crate::bubble::persist_compact_position(window, &controller, &settings);
+        let release = crate::bubble::set_native_move_active(&controller, false);
+        return match (result, release) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+        };
     }
     let Some(bounds) = capture_expanded_bounds(window)? else {
         return Ok(());

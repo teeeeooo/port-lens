@@ -170,7 +170,7 @@ fn normalize_bounds(mut bounds: WindowBounds) -> WindowBounds {
         bounds.width = 1020.0;
     }
     if !bounds.height.is_finite() {
-        bounds.height = 760.0;
+        bounds.height = 680.0;
     }
     bounds.width = bounds.width.round().max(800.0);
     bounds.height = bounds.height.round().max(580.0);

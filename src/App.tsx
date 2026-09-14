@@ -1,4 +1,4 @@
-import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -15,7 +15,6 @@ import {
   minimizeMainWindow,
   showCompactHover,
   hideCompactHover,
-  startCompactDrag,
   openLogs,
   openManagedAppLogs,
   removeManagedApp,
@@ -164,12 +163,6 @@ function App() {
   const managedRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedStateEpoch = useRef(0);
   const monitoredRefreshInFlight = useRef<Promise<void> | null>(null);
-  const bubbleDrag = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    started: boolean;
-  } | null>(null);
   const uiLanguage = resolveLanguage(settings.language);
 
   const refreshInventory = useCallback((silent = false) => {
@@ -598,7 +591,6 @@ function App() {
           generation !== bubbleHoverGeneration.current
           || !bubbleBarInside.current
           || bubbleHoverSuppressUntilReentry.current
-          || bubbleDrag.current
         ) return;
 
         await waitForCompactHoverReady();
@@ -606,7 +598,6 @@ function App() {
           generation !== bubbleHoverGeneration.current
           || !bubbleBarInside.current
           || bubbleHoverSuppressUntilReentry.current
-          || bubbleDrag.current
         ) return;
 
         const revision = ++compactHoverRevision.current;
@@ -648,48 +639,12 @@ function App() {
     if (!bubblePanelInside.current) scheduleBubbleHoverClose();
   };
 
-  const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || (event.target as Element).closest("button")) return;
+  const prepareNativeBubbleDrag = () => {
     clearBubbleHoverTimers();
-    bubbleDrag.current = {
-      pointerId: event.pointerId,
-      startX: event.screenX,
-      startY: event.screenY,
-      started: false,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  };
-
-  const moveBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    const drag = bubbleDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId || drag.started) return;
-    if (Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
-    drag.started = true;
     bubbleHoverGeneration.current += 1;
     bubbleHoverSuppressUntilReentry.current = true;
     bubblePanelInside.current = false;
     bubbleHoverVisible.current = false;
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* native drag releases capture too */ }
-    bubbleDrag.current = null;
-    void startCompactDrag().catch((bubbleError) => setError(messageOf(bubbleError)));
-    event.preventDefault();
-  };
-
-  const finishBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    const drag = bubbleDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    bubbleDrag.current = null;
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-    if (!drag.started) void expandBubble();
-    event.preventDefault();
-  };
-
-  const cancelBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    const drag = bubbleDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    bubbleDrag.current = null;
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
   };
 
   const perform = async (
@@ -780,16 +735,16 @@ function App() {
       <main
         className="bubble-shell"
         aria-label="Port Lens compact monitor"
-        title="Drag to move · Hover for Apps · Click to open"
+        title="Drag to move · Hover for Apps · Open to expand"
         onMouseEnter={beginBubbleHover}
         onMouseLeave={endBubbleHover}
       >
         <div
           className="bubble-bar"
-          onPointerDown={beginBubbleDrag}
-          onPointerMove={moveBubbleDrag}
-          onPointerUp={finishBubbleDrag}
-          onPointerCancel={cancelBubbleDrag}
+          data-tauri-drag-region="deep"
+          onMouseDown={(event) => {
+            if (!(event.target as Element).closest("button")) prepareNativeBubbleDrag();
+          }}
         >
           <div className="bubble-grip" aria-hidden="true">
             <img src="/port-lens.svg" alt="" />

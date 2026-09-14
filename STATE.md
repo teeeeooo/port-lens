@@ -15,12 +15,17 @@ PR #3 manual Windows validation passed:
 - verified reattached Stop works
 - Stop no longer exposes the provisional lifecycle-verification message
 
-PR #4 local validation after the compact-window architecture rework:
+PR #4 local validation after the compact-window architecture rework and follow-up fixes:
 - frontend production build: PASS
 - Rust tests: 33/33 PASS
 - native clippy with warnings denied: PASS
-- macOS Tauri dev startup smoke: PASS (existing transparent-window warning only)
+- cargo fmt / diff check: PASS
 - Windows-target cross-clippy remains unavailable locally because the macOS toolchain lacks `llvm-rc`; Windows CI is the authoritative compile gate
+
+Latest Windows manual evidence before the follow-up fixes:
+- hover open/close flicker: PASS after splitting the hover panel into its own window
+- native drag: major improvement, but a very rare start/catch-up jump remained
+- compact bottom corners, startup state race, and initial main-window height still needed correction
 
 ## Product model
 
@@ -48,7 +53,11 @@ PR #4 now uses two persistent desktop windows in compact mode. The main window b
 
 The hover window is created once at app startup, owned by the main window, non-focusable, transparent, taskbar-hidden, and reused with show/hide. Main sends already-computed App status data to it, so no duplicate listener/process scan is introduced. A revision handshake waits until the hidden hover WebView has committed the requested list before showing the native panel.
 
-Compact dragging no longer follows pointermove through repeated Tauri IPC and `SetWindowPos`. After the existing 4 px click-vs-drag threshold, Port Lens invokes native `start_dragging()` once and lets the OS/Tauri window manager own the move loop. Compact position persistence is driven by debounced/coalesced `WindowEvent::Moved` handling after movement settles.
+Compact dragging now uses Tauri's built-in drag-region path directly from mouse-down. The previous 4 px threshold, pointer capture, custom `start_compact_drag` command, and per-drag IPC handoff have been removed. During native movement the taskbar topmost keeper is suspended; after movement settles, debounced `WindowEvent::Moved` persistence re-clamps/saves the position and restores the z-order correction.
+
+The compact bar again clips its own WebView surface with the validated rounded `clip-path`, including the lower corners. Main-window startup now targets 1020×680 and additionally clamps restored/default bounds to the active monitor work area so saved 760 px-era bounds cannot reopen below the taskbar.
+
+Frontend startup is gated by a builder-managed `StartupGate`. `App` does not mount or call state-dependent commands until backend setup has managed `AppState`, settings, bubble/window controllers, and completed tray setup, eliminating the transient `state not managed` startup race.
 
 ## Validation gate
 

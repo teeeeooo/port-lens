@@ -50,6 +50,8 @@ html.bubble-mode #root {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-radius: calc(10px * var(--bubble-scale));
+  clip-path: inset(0 round calc(10px * var(--bubble-scale)));
   background: transparent;
   color: var(--bubble-text);
   user-select: none;
@@ -68,6 +70,7 @@ html.bubble-mode #root {
   overflow: hidden;
   border: 1px solid var(--bubble-line);
   border-radius: calc(10px * var(--bubble-scale));
+  clip-path: inset(0 round calc(10px * var(--bubble-scale)));
   background: var(--bubble-glass);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), inset 0 -1px 0 rgba(0, 0, 0, 0.16);
   backdrop-filter: blur(28px) saturate(115%);

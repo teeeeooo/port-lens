@@ -15,6 +15,7 @@ use process_control::{
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
 use std::process::Child;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
@@ -24,6 +25,16 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
 const EARLY_EXIT_THRESHOLD: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct StartupGate {
+    ready: AtomicBool,
+}
+
+#[tauri::command]
+fn get_startup_ready(gate: State<'_, StartupGate>) -> bool {
+    gate.ready.load(Ordering::Acquire)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MinimizeTarget {
@@ -1227,14 +1238,6 @@ fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_compact_drag(window: WebviewWindow) -> Result<(), String> {
-    bubble::hide_hover_panel(&window)?;
-    window
-        .start_dragging()
-        .map_err(|error| format!("Failed to start native compact drag: {error}"))
-}
-
-#[tauri::command]
 fn expand_from_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
@@ -1256,6 +1259,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(StartupGate::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -1394,6 +1398,9 @@ pub fn run() {
             }
 
             tray_builder.build(app)?;
+            app.state::<StartupGate>()
+                .ready
+                .store(true, Ordering::Release);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1437,6 +1444,14 @@ pub fn run() {
                                 }
                             }
                         } else {
+                            if matches!(event, WindowEvent::Moved(_)) {
+                                let controller =
+                                    window.app_handle().state::<bubble::BubbleController>();
+                                if bubble::is_collapsed(&controller).unwrap_or(false) {
+                                    let _ = bubble::set_native_move_active(&controller, true);
+                                    let _ = bubble::hide_hover_panel(&webview);
+                                }
+                            }
                             window_state::schedule_persist(webview);
                         }
                     }
@@ -1445,6 +1460,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_startup_ready,
             get_listeners,
             get_monitored_listeners,
             get_managed_apps,
@@ -1465,7 +1481,6 @@ pub fn run() {
             minimize_main_window,
             show_compact_hover,
             hide_compact_hover,
-            start_compact_drag,
             expand_from_bubble
         ])
         .run(tauri::generate_context!())
