@@ -6,7 +6,6 @@ mod process_control;
 mod registry;
 mod settings;
 mod window_state;
-mod windows_compact_drag;
 
 use diagnostics::{Diagnostics, ManagedLogPaths};
 use models::{ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime};
@@ -1164,7 +1163,8 @@ fn update_settings(
             && !settings.compact_mode_enabled
             && bubble::is_collapsed(&controller)?
         {
-            let _ = expand_window(&window, &controller, true)?;
+            let payload = bubble::expand(&window, &controller, true)?;
+            emit_bubble_state(&window, payload);
         } else {
             bubble::resize_collapsed(&window, &controller, &store)?;
         }
@@ -1176,17 +1176,6 @@ fn update_settings(
 
 fn emit_bubble_state(window: &WebviewWindow, payload: bubble::BubblePayload) {
     let _ = window.emit(BUBBLE_EVENT, payload);
-}
-
-fn expand_window(
-    window: &WebviewWindow,
-    controller: &bubble::BubbleController,
-    focus: bool,
-) -> Result<bubble::BubblePayload, String> {
-    let payload = bubble::expand(window, controller, focus)?;
-    windows_compact_drag::set_compact_active(false);
-    emit_bubble_state(window, payload);
-    Ok(payload)
 }
 
 #[tauri::command]
@@ -1202,9 +1191,7 @@ fn collapse_window(
     settings: &SettingsStore,
 ) -> Result<bubble::BubblePayload, String> {
     window_state::persist_now(window)?;
-    windows_compact_drag::install(window)?;
     let payload = bubble::collapse(window, controller, settings)?;
-    windows_compact_drag::set_compact_active(true);
     emit_bubble_state(window, payload);
     Ok(payload)
 }
@@ -1242,9 +1229,6 @@ fn show_compact_hover(
     settings: State<'_, SettingsStore>,
     rows: u32,
 ) -> Result<(), String> {
-    if windows_compact_drag::is_drag_active() {
-        return bubble::hide_hover_panel(&window);
-    }
     bubble::show_hover_panel(&window, &controller, &settings, rows)
 }
 
@@ -1254,45 +1238,21 @@ fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_compact_drag(
-    window: WebviewWindow,
-    controller: State<'_, bubble::BubbleController>,
-) -> Result<(), String> {
-    if !bubble::is_collapsed(&controller)? {
-        return Err("Compact drag is only available while the compact monitor is active.".into());
-    }
-
-    #[cfg(windows)]
-    {
-        let _ = window;
-        Err("Windows compact drag is handled directly by the native mouse-down path.".into())
-    }
-
-    #[cfg(not(windows))]
-    {
-        bubble::set_native_move_active(&controller, true)?;
-        bubble::hide_hover_panel(&window)?;
-        let result = window
-            .start_dragging()
-            .map_err(|error| format!("Failed to start native compact drag: {error}"));
-        let release = bubble::set_native_move_active(&controller, false);
-        result?;
-        release
-    }
-}
-
-#[tauri::command]
 fn expand_from_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
 ) -> Result<bubble::BubblePayload, String> {
-    expand_window(&window, &controller, true)
+    let payload = bubble::expand(&window, &controller, true)?;
+    emit_bubble_state(&window, payload);
+    Ok(payload)
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let controller = app.state::<bubble::BubbleController>();
-        let _ = expand_window(&window, &controller, true);
+        if let Ok(payload) = bubble::expand(&window, &controller, true) {
+            emit_bubble_state(&window, payload);
+        }
     }
 }
 
@@ -1370,7 +1330,6 @@ pub fn run() {
             app.manage(settings_store);
             app.manage(bubble::BubbleController::default());
             app.manage(window_state::WindowBoundsController::default());
-            windows_compact_drag::initialize(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 window_state::restore_initial(&window, &initial_settings)?;
             }
@@ -1463,12 +1422,6 @@ pub fn run() {
                 }
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                     if let Some(webview) = window.app_handle().get_webview_window("main") {
-                        let controller = window.app_handle().state::<bubble::BubbleController>();
-                        let collapsed = bubble::is_collapsed(&controller).unwrap_or(false);
-                        if collapsed && cfg!(target_os = "windows") {
-                            return;
-                        }
-
                         let minimized = webview.is_minimized().unwrap_or(false);
                         if minimized {
                             let settings = window.app_handle().state::<SettingsStore>();
@@ -1491,6 +1444,13 @@ pub fn run() {
                                 }
                             }
                         } else {
+                            if matches!(event, WindowEvent::Moved(_)) {
+                                let controller =
+                                    window.app_handle().state::<bubble::BubbleController>();
+                                if bubble::is_collapsed(&controller).unwrap_or(false) {
+                                    let _ = bubble::set_native_move_active(&controller, true);
+                                }
+                            }
                             window_state::schedule_persist(webview);
                         }
                     }
@@ -1520,7 +1480,6 @@ pub fn run() {
             minimize_main_window,
             show_compact_hover,
             hide_compact_hover,
-            start_compact_drag,
             expand_from_bubble
         ])
         .run(tauri::generate_context!())

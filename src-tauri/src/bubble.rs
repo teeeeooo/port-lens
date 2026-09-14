@@ -6,6 +6,8 @@ use tauri::{LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, Webvi
 #[cfg(windows)]
 use std::{thread, time::Duration};
 #[cfg(windows)]
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
 };
@@ -122,6 +124,16 @@ pub fn set_native_move_active(controller: &BubbleController, active: bool) -> Re
         .lock()
         .map(|mut state| state.native_move_active = active)
         .map_err(|_| "Bubble state lock is poisoned.".to_string())
+}
+
+#[cfg(windows)]
+pub fn is_compact_drag_input_active() -> bool {
+    unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn is_compact_drag_input_active() -> bool {
+    false
 }
 
 fn clamp_i32(value: i64, min: i64, max: i64) -> i32 {
@@ -370,7 +382,7 @@ fn start_taskbar_z_order_keeper(
         if !keep_running {
             break;
         }
-        if !native_move_active && !crate::windows_compact_drag::is_drag_active() {
+        if !native_move_active && !is_compact_drag_input_active() {
             let _ = refresh_taskbar_z_order(&window);
         }
         thread::sleep(Duration::from_millis(250));

@@ -100,6 +100,14 @@ pub fn schedule_persist(window: WebviewWindow) {
                 continue;
             }
 
+            let bubble_controller = app.state::<BubbleController>();
+            if crate::bubble::is_collapsed(&bubble_controller).unwrap_or(false)
+                && crate::bubble::is_compact_drag_input_active()
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 let _ = persist_now(&window);
             }

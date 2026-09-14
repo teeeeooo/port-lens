@@ -20,7 +20,6 @@ import {
   removeManagedApp,
   restartManagedApp,
   saveManagedApp,
-  startCompactDrag,
   startManagedApp,
   stopManagedApp,
   updateSettings,
@@ -124,9 +123,6 @@ const HOVER_DATA_EVENT = "port-lens://compact-hover-data";
 const HOVER_PRESENCE_EVENT = "port-lens://compact-hover-presence";
 const HOVER_READY_EVENT = "port-lens://compact-hover-ready";
 const HOVER_RENDERED_EVENT = "port-lens://compact-hover-rendered";
-const NATIVE_DRAG_STARTED_EVENT = "port-lens://compact-native-drag-started";
-const NATIVE_DRAG_ENDED_EVENT = "port-lens://compact-native-drag-ended";
-const USE_NATIVE_WINDOWS_COMPACT_DRAG = !isDevMockMode && /Windows/i.test(navigator.userAgent);
 
 function App() {
   const mockParams = isDevMockMode ? new URLSearchParams(window.location.search) : null;
@@ -571,20 +567,6 @@ function App() {
       }
     }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
 
-    void listen(NATIVE_DRAG_STARTED_EVENT, () => {
-      if (!active) return;
-      clearBubbleHoverTimers();
-      bubbleHoverGeneration.current += 1;
-      bubbleHoverSuppressUntilReentry.current = true;
-      bubblePanelInside.current = false;
-      bubbleHoverVisible.current = false;
-    }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
-
-    void listen(NATIVE_DRAG_ENDED_EVENT, () => {
-      if (!active) return;
-      bubbleHoverVisible.current = false;
-    }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
-
     return () => {
       active = false;
       cleanups.forEach((cleanup) => cleanup());
@@ -658,11 +640,15 @@ function App() {
   };
 
   const prepareNativeBubbleDrag = () => {
+    const hoverWasVisible = bubbleHoverVisible.current;
     clearBubbleHoverTimers();
     bubbleHoverGeneration.current += 1;
     bubbleHoverSuppressUntilReentry.current = true;
     bubblePanelInside.current = false;
     bubbleHoverVisible.current = false;
+    if (hoverWasVisible) {
+      void hideCompactHover().catch((bubbleError) => setError(messageOf(bubbleError)));
+    }
   };
 
   const perform = async (
@@ -759,12 +745,9 @@ function App() {
       >
         <div
           className="bubble-bar"
+          data-tauri-drag-region="deep"
           onMouseDown={(event) => {
-            if ((event.target as Element).closest("button")) return;
-            prepareNativeBubbleDrag();
-            if (!USE_NATIVE_WINDOWS_COMPACT_DRAG) {
-              void startCompactDrag().catch((bubbleError) => setError(messageOf(bubbleError)));
-            }
+            if (!(event.target as Element).closest("button")) prepareNativeBubbleDrag();
           }}
         >
           <div className="bubble-grip" aria-hidden="true">
