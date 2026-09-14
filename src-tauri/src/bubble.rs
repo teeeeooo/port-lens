@@ -370,7 +370,7 @@ fn start_taskbar_z_order_keeper(
         if !keep_running {
             break;
         }
-        if !native_move_active {
+        if !native_move_active && !crate::windows_compact_drag::is_drag_active() {
             let _ = refresh_taskbar_z_order(&window);
         }
         thread::sleep(Duration::from_millis(250));

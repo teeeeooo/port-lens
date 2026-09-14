@@ -53,7 +53,7 @@ PR #4 now uses two persistent desktop windows in compact mode. The main window b
 
 The hover window is created once at app startup, owned by the main window, non-focusable, transparent, taskbar-hidden, and reused with show/hide. Main sends already-computed App status data to it, so no duplicate listener/process scan is introduced. A revision handshake waits until the hidden hover WebView has committed the requested list before showing the native panel.
 
-Compact dragging now starts from a single mouse-down command that captures the original grab offset and transfers it to Win32. On Windows the backend converts that original offset to the exact physical screen point, requests the hover HWND to hide asynchronously, and enters the native move loop with a synchronous `WM_NCLBUTTONDOWN(HTCAPTION)` message. This deliberately bypasses Tauri/Tao `start_dragging()`, its delayed `GetCursorPos()` sampling, and its queued `PostMessageW` handoff. There is still no 4 px threshold, pointer capture, pointermove IPC, or drag-region frontend command. Windows compact `Moved`/`Resized` callbacks perform no drag-time persistence/native work; when the Win32 move loop returns, the final compact position is clamped/persisted once and taskbar z-order protection resumes.
+Windows compact dragging is now initiated entirely inside the native mouse-down message path. Port Lens installs Win32 subclasses on the main HWND and its current WebView child HWNDs when compact mode is entered. A non-button `WM_LBUTTONDOWN` is intercepted before React/Tauri IPC, the exact message position is read with `GetMessagePos()`, the hover HWND is hidden asynchronously, and the same native call stack enters the system move loop with synchronous `WM_NCLBUTTONDOWN(HTCAPTION)`. The right-side Open-button region is passed through to WebView2 normally. This removes the remaining JS→IPC drag-start boundary as well as delayed cursor sampling, 4 px threshold, pointer capture, pointermove IPC, and per-frame `SetWindowPos`. While the native move loop is active the taskbar z-order keeper is suspended; after it returns, final position is clamped/persisted once and normal z-order protection resumes. Non-Windows builds retain the existing one-shot Tauri native drag fallback.
 
 The compact bar again clips its own WebView surface with the validated rounded `clip-path`, including the lower corners. Main-window startup now targets 1020×680 and additionally clamps restored/default bounds to the active monitor work area so saved 760 px-era bounds cannot reopen below the taskbar.
 
@@ -64,7 +64,8 @@ Frontend startup is gated by a builder-managed `StartupGate`. `App` does not mou
 Do not merge PR #4 until the latest Windows Portable is manually checked for:
 - hover panel appears/disappears without compact-bar flicker
 - hover panel contains current App names/statuses and remains scrollable above 8 Apps
-- fast/repeated native drag tracks the pointer continuously without lag, drop, or catch-up jump
+- normal and fast/repeated native drag starts immediately and tracks the pointer without lag, drop, catch-up jump, or a persistent cursor/window offset
+- the Open button remains clickable and does not start native dragging
 - starting drag while the hover panel is visible hides the panel cleanly and moves only the compact bar
 - taskbar overlap/topmost behavior and multi-monitor/mixed-DPI movement remain correct
 - saved compact position restores after restart

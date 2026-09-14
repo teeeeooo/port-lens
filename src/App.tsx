@@ -124,6 +124,9 @@ const HOVER_DATA_EVENT = "port-lens://compact-hover-data";
 const HOVER_PRESENCE_EVENT = "port-lens://compact-hover-presence";
 const HOVER_READY_EVENT = "port-lens://compact-hover-ready";
 const HOVER_RENDERED_EVENT = "port-lens://compact-hover-rendered";
+const NATIVE_DRAG_STARTED_EVENT = "port-lens://compact-native-drag-started";
+const NATIVE_DRAG_ENDED_EVENT = "port-lens://compact-native-drag-ended";
+const USE_NATIVE_WINDOWS_COMPACT_DRAG = !isDevMockMode && /Windows/i.test(navigator.userAgent);
 
 function App() {
   const mockParams = isDevMockMode ? new URLSearchParams(window.location.search) : null;
@@ -568,6 +571,20 @@ function App() {
       }
     }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
 
+    void listen(NATIVE_DRAG_STARTED_EVENT, () => {
+      if (!active) return;
+      clearBubbleHoverTimers();
+      bubbleHoverGeneration.current += 1;
+      bubbleHoverSuppressUntilReentry.current = true;
+      bubblePanelInside.current = false;
+      bubbleHoverVisible.current = false;
+    }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
+
+    void listen(NATIVE_DRAG_ENDED_EVENT, () => {
+      if (!active) return;
+      bubbleHoverVisible.current = false;
+    }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
+
     return () => {
       active = false;
       cleanups.forEach((cleanup) => cleanup());
@@ -745,12 +762,9 @@ function App() {
           onMouseDown={(event) => {
             if ((event.target as Element).closest("button")) return;
             prepareNativeBubbleDrag();
-            const width = window.innerWidth || 1;
-            const height = window.innerHeight || 1;
-            void startCompactDrag(
-              Math.max(0, Math.min(1, event.clientX / width)),
-              Math.max(0, Math.min(1, event.clientY / height)),
-            ).catch((bubbleError) => setError(messageOf(bubbleError)));
+            if (!USE_NATIVE_WINDOWS_COMPACT_DRAG) {
+              void startCompactDrag().catch((bubbleError) => setError(messageOf(bubbleError)));
+            }
           }}
         >
           <div className="bubble-grip" aria-hidden="true">

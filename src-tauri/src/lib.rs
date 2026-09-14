@@ -6,6 +6,7 @@ mod process_control;
 mod registry;
 mod settings;
 mod window_state;
+mod windows_compact_drag;
 
 use diagnostics::{Diagnostics, ManagedLogPaths};
 use models::{ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime};
@@ -21,17 +22,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
-
-#[cfg(windows)]
-use windows::Win32::{
-    Foundation::{LPARAM, WPARAM},
-    UI::{
-        Input::KeyboardAndMouse::ReleaseCapture,
-        WindowsAndMessaging::{
-            SendMessageW, ShowWindowAsync, HTCAPTION, SW_HIDE, WM_NCLBUTTONDOWN,
-        },
-    },
-};
 
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
@@ -1174,8 +1164,7 @@ fn update_settings(
             && !settings.compact_mode_enabled
             && bubble::is_collapsed(&controller)?
         {
-            let payload = bubble::expand(&window, &controller, true)?;
-            emit_bubble_state(&window, payload);
+            let _ = expand_window(&window, &controller, true)?;
         } else {
             bubble::resize_collapsed(&window, &controller, &store)?;
         }
@@ -1187,6 +1176,17 @@ fn update_settings(
 
 fn emit_bubble_state(window: &WebviewWindow, payload: bubble::BubblePayload) {
     let _ = window.emit(BUBBLE_EVENT, payload);
+}
+
+fn expand_window(
+    window: &WebviewWindow,
+    controller: &bubble::BubbleController,
+    focus: bool,
+) -> Result<bubble::BubblePayload, String> {
+    let payload = bubble::expand(window, controller, focus)?;
+    windows_compact_drag::set_compact_active(false);
+    emit_bubble_state(window, payload);
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -1202,7 +1202,9 @@ fn collapse_window(
     settings: &SettingsStore,
 ) -> Result<bubble::BubblePayload, String> {
     window_state::persist_now(window)?;
+    windows_compact_drag::install(window)?;
     let payload = bubble::collapse(window, controller, settings)?;
+    windows_compact_drag::set_compact_active(true);
     emit_bubble_state(window, payload);
     Ok(payload)
 }
@@ -1240,6 +1242,9 @@ fn show_compact_hover(
     settings: State<'_, SettingsStore>,
     rows: u32,
 ) -> Result<(), String> {
+    if windows_compact_drag::is_drag_active() {
+        return bubble::hide_hover_panel(&window);
+    }
     bubble::show_hover_panel(&window, &controller, &settings, rows)
 }
 
@@ -1248,98 +1253,32 @@ fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
     bubble::hide_hover_panel(&window)
 }
 
-#[cfg(windows)]
-fn pack_screen_point(x: i32, y: i32) -> LPARAM {
-    let packed = (x as u32 & 0xffff) | ((y as u32 & 0xffff) << 16);
-    LPARAM(packed as i32 as isize)
-}
-
-#[cfg(windows)]
-fn start_windows_compact_drag(
-    window: &WebviewWindow,
-    offset_ratio_x: f64,
-    offset_ratio_y: f64,
-) -> Result<(), String> {
-    let position = window
-        .outer_position()
-        .map_err(|error| format!("Failed to read compact position before drag: {error}"))?;
-    let size = window
-        .outer_size()
-        .map_err(|error| format!("Failed to read compact size before drag: {error}"))?;
-    let ratio_x = offset_ratio_x.clamp(0.0, 1.0);
-    let ratio_y = offset_ratio_y.clamp(0.0, 1.0);
-    let click_x = position.x + (ratio_x * size.width.saturating_sub(1) as f64).round() as i32;
-    let click_y = position.y + (ratio_y * size.height.saturating_sub(1) as f64).round() as i32;
-
-    if let Some(hover) = window.app_handle().get_webview_window("compact-hover") {
-        if let Ok(hwnd) = hover.hwnd() {
-            unsafe {
-                let _ = ShowWindowAsync(hwnd, SW_HIDE);
-            }
-        }
-    }
-
-    let hwnd = window
-        .hwnd()
-        .map_err(|error| format!("Failed to resolve compact HWND: {error}"))?;
-    unsafe {
-        let _ = ReleaseCapture();
-        SendMessageW(
-            hwnd,
-            WM_NCLBUTTONDOWN,
-            Some(WPARAM(HTCAPTION as usize)),
-            Some(pack_screen_point(click_x, click_y)),
-        );
-    }
-    Ok(())
-}
-
 #[tauri::command]
 fn start_compact_drag(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
-    _settings: State<'_, SettingsStore>,
-    offset_ratio_x: f64,
-    offset_ratio_y: f64,
 ) -> Result<(), String> {
     if !bubble::is_collapsed(&controller)? {
         return Err("Compact drag is only available while the compact monitor is active.".into());
     }
 
-    bubble::set_native_move_active(&controller, true)?;
-    let drag_result = {
-        #[cfg(windows)]
-        {
-            start_windows_compact_drag(&window, offset_ratio_x, offset_ratio_y)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (offset_ratio_x, offset_ratio_y);
-            bubble::hide_hover_panel(&window)?;
-            window
-                .start_dragging()
-                .map_err(|error| format!("Failed to start native compact drag: {error}"))
-        }
-    };
-
-    if let Err(error) = drag_result {
-        let _ = bubble::set_native_move_active(&controller, false);
-        return Err(error);
+    #[cfg(windows)]
+    {
+        let _ = window;
+        Err("Windows compact drag is handled directly by the native mouse-down path.".into())
     }
 
-    #[cfg(windows)]
-    let persist_result: Result<(), String> =
-        bubble::persist_compact_position(&window, &controller, &_settings);
     #[cfg(not(windows))]
-    let persist_result: Result<(), String> = Ok(());
-
-    let release_result = bubble::set_native_move_active(&controller, false);
-    let _ = window
-        .app_handle()
-        .emit_to("main", "port-lens://compact-drag-ended", ());
-
-    persist_result?;
-    release_result
+    {
+        bubble::set_native_move_active(&controller, true)?;
+        bubble::hide_hover_panel(&window)?;
+        let result = window
+            .start_dragging()
+            .map_err(|error| format!("Failed to start native compact drag: {error}"));
+        let release = bubble::set_native_move_active(&controller, false);
+        result?;
+        release
+    }
 }
 
 #[tauri::command]
@@ -1347,17 +1286,13 @@ fn expand_from_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
 ) -> Result<bubble::BubblePayload, String> {
-    let payload = bubble::expand(&window, &controller, true)?;
-    emit_bubble_state(&window, payload);
-    Ok(payload)
+    expand_window(&window, &controller, true)
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let controller = app.state::<bubble::BubbleController>();
-        if let Ok(payload) = bubble::expand(&window, &controller, true) {
-            emit_bubble_state(&window, payload);
-        }
+        let _ = expand_window(&window, &controller, true);
     }
 }
 
@@ -1435,6 +1370,7 @@ pub fn run() {
             app.manage(settings_store);
             app.manage(bubble::BubbleController::default());
             app.manage(window_state::WindowBoundsController::default());
+            windows_compact_drag::initialize(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 window_state::restore_initial(&window, &initial_settings)?;
             }
