@@ -46,29 +46,29 @@ Implemented behavior:
 
 ## 3. Compact hover App list
 
-Status: active on `feature/compact-app-hover` via PR #4, retargeted to `main`. Latest A-D interaction fixes are implemented and pass local frontend/Rust/native+Windows-target clippy validation. Awaiting fresh Windows package and manual validation before merge.
+Status: active on `feature/compact-app-hover` via PR #4, retargeted to `main`. The earlier same-HWND hover/drag implementation has been replaced by the fixed compact window + dedicated hover window + native drag architecture. Local frontend build, 33 Rust tests, native clippy, and macOS startup smoke pass. Awaiting Windows CI/package and manual validation before merge.
 
 Goal: keep the compact bar stable while exposing a lightweight registered-App list on hover and preserving reliable drag behavior.
 
 Implemented behavior:
-- hovering expands the native compact window upward after a short delay
+- the main compact HWND remains fixed at 276×46 and is never resized by hover
+- a persistent hidden `compact-hover` WebViewWindow renders the App list and is shown/hidden as needed
 - each registered App shows only its name and a green/gray status dot
 - visible height is capped at 8 Apps; additional Apps remain scrollable
-- compact bar and hover list render as separate rounded translucent surfaces
-- hover close hides the list before the native window shrinks
-- drag never resizes the native window while the pointer gesture is active
-- dragging an already-expanded hover moves the expanded geometry as one unit and collapses after release
-- drag pointer offsets are relative to the whole native compact window, preserving the grab point while expanded
-- Windows drag uses position-only `SetWindowPos`; per-move z-order refresh was removed
-- intentional taskbar overlap remains protected by the periodic topmost keeper and a final drag-end correction
+- hover data is reused from the main monitoring state; the panel does not run its own listener/process scan
+- a render revision handshake prevents the native hover window from being shown before its requested DOM is committed
+- the existing 4 px threshold distinguishes click from drag, then Tauri `start_dragging()` hands the move loop to the OS
+- repeated pointermove IPC, cursor polling, and manual per-frame `SetWindowPos` movement have been removed
+- compact position persistence is coalesced from native `WindowEvent::Moved` events after movement settles
+- intentional Windows taskbar overlap remains protected by the periodic topmost keeper and final persisted-position correction
 - the list remains display-only; no App lifecycle controls are added
 
 Manual acceptance gate:
-- no compact-bar flash/recreation effect on repeated hover open/close
-- no dropped drag while moving quickly or repeatedly
-- hover-open drag collapses cleanly after release without position drift
-- taskbar overlap and multi-monitor placement remain correct
-- saved compact position restores after restart
+- repeated hover open/close does not flash or recreate the compact bar
+- hover list content/status is current and scrolling works above 8 Apps
+- fast/repeated drag follows the pointer continuously without lag, drop, or catch-up jump
+- dragging while the hover panel is visible hides the panel cleanly before native movement
+- taskbar overlap, multi-monitor/mixed-DPI movement, and saved-position restore remain correct
 
 Suggested branch: `feature/compact-app-hover`
 

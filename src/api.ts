@@ -82,17 +82,14 @@ export const minimizeMainWindow = () =>
     ? Promise.resolve<BubbleState>({ collapsed: true })
     : invoke<BubbleState>("minimize_main_window");
 
-export const moveCompactBubble = (offsetRatioX: number, offsetRatioY: number, persist = false) =>
-  isDevMockMode
-    ? Promise.resolve(mockBubbleState())
-    : invoke<BubbleState>("move_compact_bubble", {
-        offset: { offsetRatioX, offsetRatioY, persist },
-      });
+export const showCompactHover = (rows: number) =>
+  isDevMockMode ? Promise.resolve() : invoke<void>("show_compact_hover", { rows });
 
-export const setCompactHover = (rows: number) =>
-  isDevMockMode
-    ? Promise.resolve(mockBubbleState())
-    : invoke<BubbleState>("set_compact_hover", { rows });
+export const hideCompactHover = () =>
+  isDevMockMode ? Promise.resolve() : invoke<void>("hide_compact_hover");
+
+export const startCompactDrag = () =>
+  isDevMockMode ? Promise.resolve() : invoke<void>("start_compact_drag");
 
 export const expandFromBubble = () =>
   isDevMockMode

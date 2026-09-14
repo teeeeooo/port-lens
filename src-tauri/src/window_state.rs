@@ -1,6 +1,6 @@
 use crate::bubble::BubbleController;
 use crate::settings::{AppSettings, SettingsStore, WindowBounds};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{LogicalSize, Manager, Monitor, PhysicalPosition, WebviewWindow};
 
@@ -11,6 +11,7 @@ const PERSIST_DELAY: Duration = Duration::from_millis(400);
 #[derive(Default)]
 pub struct WindowBoundsController {
     generation: AtomicU64,
+    worker_running: AtomicBool,
 }
 
 fn window_error(error: tauri::Error) -> String {
@@ -37,32 +38,47 @@ pub fn restore_initial(window: &WebviewWindow, settings: &AppSettings) -> Result
 
 pub fn schedule_persist(window: WebviewWindow) {
     let app = window.app_handle().clone();
-    let generation = app
-        .state::<WindowBoundsController>()
-        .generation
-        .fetch_add(1, Ordering::Relaxed)
-        + 1;
+    let controller = app.state::<WindowBoundsController>();
+    controller.generation.fetch_add(1, Ordering::Release);
+    if controller.worker_running.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(PERSIST_DELAY).await;
-        let controller = app.state::<WindowBoundsController>();
-        if controller.generation.load(Ordering::Relaxed) != generation {
-            return;
-        }
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = persist_now(&window);
+        loop {
+            let controller = app.state::<WindowBoundsController>();
+            let observed = controller.generation.load(Ordering::Acquire);
+            tokio::time::sleep(PERSIST_DELAY).await;
+            if controller.generation.load(Ordering::Acquire) != observed {
+                continue;
+            }
+
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = persist_now(&window);
+            }
+
+            controller.worker_running.store(false, Ordering::Release);
+            if controller.generation.load(Ordering::Acquire) == observed {
+                break;
+            }
+            if controller.worker_running.swap(true, Ordering::AcqRel) {
+                break;
+            }
         }
     });
 }
 
 pub fn persist_now(window: &WebviewWindow) -> Result<(), String> {
     let app = window.app_handle();
-    if crate::bubble::is_collapsed(&app.state::<BubbleController>())? {
-        return Ok(());
+    let controller = app.state::<BubbleController>();
+    let settings = app.state::<SettingsStore>();
+    if crate::bubble::is_collapsed(&controller)? {
+        return crate::bubble::persist_compact_position(window, &controller, &settings);
     }
     let Some(bounds) = capture_expanded_bounds(window)? else {
         return Ok(());
     };
-    app.state::<SettingsStore>().update_expanded_bounds(bounds)
+    settings.update_expanded_bounds(bounds)
 }
 
 fn capture_expanded_bounds(window: &WebviewWindow) -> Result<Option<WindowBounds>, String> {

@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for Port Lens desktop windows",
+  "windows": [
+    "main",
+    "compact-hover"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",

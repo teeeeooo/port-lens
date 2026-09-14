@@ -15,11 +15,12 @@ PR #3 manual Windows validation passed:
 - verified reattached Stop works
 - Stop no longer exposes the provisional lifecycle-verification message
 
-PR #4 local validation after the latest compact interaction changes:
+PR #4 local validation after the compact-window architecture rework:
 - frontend production build: PASS
-- Rust tests: 32/32 PASS
+- Rust tests: 33/33 PASS
 - native clippy with warnings denied: PASS
-- Windows-target cross-clippy with warnings denied: PASS
+- macOS Tauri dev startup smoke: PASS (existing transparent-window warning only)
+- Windows-target cross-clippy remains unavailable locally because the macOS toolchain lacks `llvm-rc`; Windows CI is the authoritative compile gate
 
 ## Product model
 
@@ -43,15 +44,18 @@ Compact mode is enabled by default. Minimize enters the floating compact monitor
 
 On Windows, user drag may use the full monitor bounds, including the taskbar-reserved area. A topmost keeper protects intentional taskbar overlap. Non-Windows desktop builds retain the 12 px edge margin policy.
 
-PR #4 adds a registered-App hover list with green/gray status dots, capped at 8 visible rows with internal scrolling. The compact bar and App list are separate translucent surfaces so native hover resizing does not repaint one monolithic glass surface.
+PR #4 now uses two persistent desktop windows in compact mode. The main window becomes a fixed-size 276×46 compact bar; a separate hidden `compact-hover` WebViewWindow renders the registered-App list with green/gray status dots, capped at 8 visible rows with internal scrolling. Hover no longer resizes the main compact HWND.
 
-The latest drag path keeps the current native window size fixed for the entire pointer gesture. If hover is already expanded, the expanded geometry moves as one unit and collapses only after pointer release. Drag motion is position-only; taskbar z-order correction is no longer repeated for every pointer move. Hover close hides the list before shrinking the native window.
+The hover window is created once at app startup, owned by the main window, non-focusable, transparent, taskbar-hidden, and reused with show/hide. Main sends already-computed App status data to it, so no duplicate listener/process scan is introduced. A revision handshake waits until the hidden hover WebView has committed the requested list before showing the native panel.
+
+Compact dragging no longer follows pointermove through repeated Tauri IPC and `SetWindowPos`. After the existing 4 px click-vs-drag threshold, Port Lens invokes native `start_dragging()` once and lets the OS/Tauri window manager own the move loop. Compact position persistence is driven by debounced/coalesced `WindowEvent::Moved` handling after movement settles.
 
 ## Validation gate
 
 Do not merge PR #4 until the latest Windows Portable is manually checked for:
-- hover open/close flicker
-- drag continuity with hover closed and hover open
-- no position jump when an expanded hover drag collapses after release
-- taskbar overlap/topmost behavior
-- saved compact position after restart
+- hover panel appears/disappears without compact-bar flicker
+- hover panel contains current App names/statuses and remains scrollable above 8 Apps
+- fast/repeated native drag tracks the pointer continuously without lag, drop, or catch-up jump
+- starting drag while the hover panel is visible hides the panel cleanly and moves only the compact bar
+- taskbar overlap/topmost behavior and multi-monitor/mixed-DPI movement remain correct
+- saved compact position restores after restart

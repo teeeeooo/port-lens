@@ -1,7 +1,7 @@
 use crate::settings::{SettingsStore, WindowPosition};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 #[cfg(windows)]
 use std::{thread, time::Duration};
@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const BUBBLE_WIDTH: f64 = 276.0;
 const BUBBLE_HEIGHT: f64 = 46.0;
 const HOVER_ROW_HEIGHT: f64 = 28.0;
-const HOVER_LIST_PADDING: f64 = 14.0;
+const HOVER_PANEL_PADDING: f64 = 14.0;
 const MAX_HOVER_ROWS: u32 = 8;
 const DESKTOP_EDGE_MARGIN: i32 = 12;
 const MIN_WIDTH: f64 = 800.0;
@@ -47,27 +47,28 @@ impl CompactPositionPolicy {
 }
 
 fn bubble_physical_size(bubble_scale: f64, monitor_scale: f64) -> PhysicalSize<u32> {
-    bubble_physical_size_for_rows(bubble_scale, monitor_scale, 0)
-}
-
-fn bubble_physical_size_for_rows(
-    bubble_scale: f64,
-    monitor_scale: f64,
-    rows: u32,
-) -> PhysicalSize<u32> {
-    let visible_rows = rows.min(MAX_HOVER_ROWS);
-    let hover_height = if visible_rows == 0 {
-        0.0
-    } else {
-        HOVER_LIST_PADDING + HOVER_ROW_HEIGHT * visible_rows as f64
-    };
     PhysicalSize::new(
         (BUBBLE_WIDTH * bubble_scale * monitor_scale)
             .round()
             .max(1.0) as u32,
-        ((BUBBLE_HEIGHT + hover_height) * bubble_scale * monitor_scale)
+        (BUBBLE_HEIGHT * bubble_scale * monitor_scale)
             .round()
             .max(1.0) as u32,
+    )
+}
+
+fn hover_panel_physical_size(
+    bubble_scale: f64,
+    monitor_scale: f64,
+    rows: u32,
+    width: u32,
+) -> PhysicalSize<u32> {
+    let visible_rows = rows.clamp(1, MAX_HOVER_ROWS);
+    let logical_height =
+        (HOVER_PANEL_PADDING + HOVER_ROW_HEIGHT * visible_rows as f64) * bubble_scale + 2.0;
+    PhysicalSize::new(
+        width.max(1),
+        (logical_height * monitor_scale).round().max(1.0) as u32,
     )
 }
 
@@ -82,8 +83,6 @@ struct ExpandedWindow {
 #[derive(Debug, Default)]
 struct BubbleState {
     collapsed: bool,
-    hover_rows: u32,
-    hover_origin: Option<PhysicalPosition<i32>>,
     z_order_generation: u64,
     expanded: Option<ExpandedWindow>,
 }
@@ -96,14 +95,6 @@ pub struct BubbleController {
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct BubblePayload {
     pub collapsed: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BubbleDragOffset {
-    pub offset_ratio_x: Option<f64>,
-    pub offset_ratio_y: Option<f64>,
-    pub persist: Option<bool>,
 }
 
 fn window_error(error: tauri::Error) -> String {
@@ -177,18 +168,67 @@ fn clamp_position(
     }
 }
 
-fn bottom_anchored_position(
-    monitor: &Monitor,
-    position: PhysicalPosition<i32>,
-    old_size: PhysicalSize<u32>,
-    new_size: PhysicalSize<u32>,
+fn hover_panel_position_in_bounds(
+    bounds_position: PhysicalPosition<i32>,
+    bounds_size: PhysicalSize<u32>,
+    main_position: PhysicalPosition<i32>,
+    main_size: PhysicalSize<u32>,
+    panel_size: PhysicalSize<u32>,
+    edge_margin: i32,
 ) -> PhysicalPosition<i32> {
-    clamp_position(
-        monitor,
-        new_size,
-        position.x as i64,
-        position.y as i64 + old_size.height as i64 - new_size.height as i64,
+    let bounds_top = bounds_position.y as i64 + edge_margin as i64;
+    let bounds_bottom = bounds_position.y as i64 + bounds_size.height as i64 - edge_margin as i64;
+    let main_top = main_position.y as i64;
+    let main_bottom = main_top + main_size.height as i64;
+    let panel_height = panel_size.height as i64;
+    let space_above = main_top - bounds_top;
+    let space_below = bounds_bottom - main_bottom;
+    let desired_y = if space_above >= panel_height {
+        main_top - panel_height
+    } else if space_below >= panel_height {
+        main_bottom
+    } else if space_above >= space_below {
+        bounds_top
+    } else {
+        bounds_bottom - panel_height
+    };
+    clamp_to_work_area(
+        bounds_position,
+        bounds_size,
+        panel_size,
+        main_position.x as i64,
+        desired_y,
+        edge_margin,
     )
+}
+
+fn hover_panel_position(
+    monitor: &Monitor,
+    main_position: PhysicalPosition<i32>,
+    main_size: PhysicalSize<u32>,
+    panel_size: PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    let policy = CompactPositionPolicy::current();
+    if policy.allows_reserved_area() {
+        hover_panel_position_in_bounds(
+            *monitor.position(),
+            *monitor.size(),
+            main_position,
+            main_size,
+            panel_size,
+            policy.edge_margin(),
+        )
+    } else {
+        let work = monitor.work_area();
+        hover_panel_position_in_bounds(
+            work.position,
+            work.size,
+            main_position,
+            main_size,
+            panel_size,
+            policy.edge_margin(),
+        )
+    }
 }
 
 fn default_collapsed_position(
@@ -410,11 +450,81 @@ fn apply_collapsed_window(
     window.show().map_err(window_error)
 }
 
+pub fn hide_hover_panel(window: &WebviewWindow) -> Result<(), String> {
+    if let Some(hover) = window.app_handle().get_webview_window("compact-hover") {
+        hover.hide().map_err(window_error)?;
+    }
+    Ok(())
+}
+
+pub fn show_hover_panel(
+    window: &WebviewWindow,
+    controller: &BubbleController,
+    settings: &SettingsStore,
+    rows: u32,
+) -> Result<(), String> {
+    if rows == 0 || !is_collapsed(controller)? {
+        return hide_hover_panel(window);
+    }
+    let hover = window
+        .app_handle()
+        .get_webview_window("compact-hover")
+        .ok_or_else(|| "Compact hover window is unavailable.".to_string())?;
+    let current_settings = settings.get()?;
+    let main_position = window.outer_position().map_err(window_error)?;
+    let main_size = window.outer_size().map_err(window_error)?;
+    let center_x = main_position.x as f64 + main_size.width as f64 / 2.0;
+    let center_y = main_position.y as f64 + main_size.height as f64 / 2.0;
+    let monitor = window
+        .monitor_from_point(center_x, center_y)
+        .map_err(window_error)?
+        .or_else(|| window.current_monitor().ok().flatten())
+        .ok_or_else(|| "No monitor is available for compact hover.".to_string())?;
+    let panel_size = hover_panel_physical_size(
+        current_settings.bubble_scale,
+        monitor.scale_factor(),
+        rows,
+        main_size.width,
+    );
+    let target = hover_panel_position(&monitor, main_position, main_size, panel_size);
+    set_compact_geometry(&hover, target, panel_size)?;
+    hover.show().map_err(window_error)
+}
+
+pub fn persist_compact_position(
+    window: &WebviewWindow,
+    controller: &BubbleController,
+    settings: &SettingsStore,
+) -> Result<(), String> {
+    if !is_collapsed(controller)? {
+        return Ok(());
+    }
+    let position = window.outer_position().map_err(window_error)?;
+    let size = window.outer_size().map_err(window_error)?;
+    let center_x = position.x as f64 + size.width as f64 / 2.0;
+    let center_y = position.y as f64 + size.height as f64 / 2.0;
+    let monitor = window
+        .monitor_from_point(center_x, center_y)
+        .map_err(window_error)?
+        .or_else(|| window.current_monitor().ok().flatten())
+        .ok_or_else(|| "No monitor is available while saving compact position.".to_string())?;
+    let target = clamp_position(&monitor, size, position.x as i64, position.y as i64);
+    if target != position {
+        set_compact_position(window, target)?;
+    }
+    settings.update_compact_position(WindowPosition {
+        x: target.x,
+        y: target.y,
+    })?;
+    refresh_taskbar_z_order(window)
+}
+
 pub fn collapse(
     window: &WebviewWindow,
     controller: &BubbleController,
     settings: &SettingsStore,
 ) -> Result<BubblePayload, String> {
+    hide_hover_panel(window)?;
     let mut state = controller
         .state
         .lock()
@@ -462,8 +572,6 @@ pub fn collapse(
         x: target.x,
         y: target.y,
     })?;
-    state.hover_rows = 0;
-    state.hover_origin = None;
     state.z_order_generation = state.z_order_generation.wrapping_add(1);
     let generation = state.z_order_generation;
     state.collapsed = true;
@@ -478,6 +586,7 @@ pub fn resize_collapsed(
     controller: &BubbleController,
     settings: &SettingsStore,
 ) -> Result<(), String> {
+    hide_hover_panel(window)?;
     if !is_collapsed(controller)? {
         return Ok(());
     }
@@ -506,137 +615,12 @@ pub fn resize_collapsed(
     })
 }
 
-pub fn set_hover_rows(
-    window: &WebviewWindow,
-    controller: &BubbleController,
-    settings: &SettingsStore,
-    rows: u32,
-) -> Result<BubblePayload, String> {
-    let (current_rows, hover_origin) = {
-        let state = controller
-            .state
-            .lock()
-            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
-        if !state.collapsed {
-            return Ok(BubblePayload { collapsed: false });
-        }
-        (state.hover_rows, state.hover_origin)
-    };
-    let next_rows = rows.min(MAX_HOVER_ROWS);
-    if current_rows == next_rows {
-        return current(controller);
-    }
-
-    let current_settings = settings.get()?;
-    let position = window.outer_position().map_err(window_error)?;
-    let old_size = window.outer_size().map_err(window_error)?;
-    let center_x = position.x as f64 + old_size.width as f64 / 2.0;
-    let center_y = position.y as f64 + old_size.height as f64 / 2.0;
-    let monitor = window
-        .monitor_from_point(center_x, center_y)
-        .map_err(window_error)?
-        .or_else(|| window.current_monitor().ok().flatten())
-        .ok_or_else(|| "No monitor is available for compact hover.".to_string())?;
-    let new_size = bubble_physical_size_for_rows(
-        current_settings.bubble_scale,
-        monitor.scale_factor(),
-        next_rows,
-    );
-    let target = if next_rows == 0 {
-        let origin = hover_origin.unwrap_or(position);
-        clamp_position(&monitor, new_size, origin.x as i64, origin.y as i64)
-    } else {
-        bottom_anchored_position(&monitor, position, old_size, new_size)
-    };
-    set_compact_geometry(window, target, new_size)?;
-
-    let mut state = controller
-        .state
-        .lock()
-        .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
-    if current_rows == 0 && next_rows > 0 {
-        state.hover_origin = Some(position);
-    } else if next_rows == 0 {
-        state.hover_origin = None;
-    }
-    state.hover_rows = next_rows;
-    drop(state);
-    current(controller)
-}
-
-pub fn move_to_cursor(
-    window: &WebviewWindow,
-    controller: &BubbleController,
-    settings: &SettingsStore,
-    offset: BubbleDragOffset,
-) -> Result<BubblePayload, String> {
-    let hover_rows = {
-        let state = controller
-            .state
-            .lock()
-            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
-        if !state.collapsed {
-            return Ok(BubblePayload { collapsed: false });
-        }
-        state.hover_rows
-    };
-
-    let cursor = window.cursor_position().map_err(window_error)?;
-    let monitor = window
-        .monitor_from_point(cursor.x, cursor.y)
-        .map_err(window_error)?
-        .or_else(|| window.current_monitor().ok().flatten())
-        .ok_or_else(|| "No monitor is available while moving the compact bubble.".to_string())?;
-    let current_settings = settings.get()?;
-    let scale = monitor.scale_factor();
-    let base_size = bubble_physical_size(current_settings.bubble_scale, scale);
-    let drag_size = bubble_physical_size_for_rows(current_settings.bubble_scale, scale, hover_rows);
-    let ratio_x = offset.offset_ratio_x.unwrap_or(0.5).clamp(0.0, 1.0);
-    let ratio_y = offset.offset_ratio_y.unwrap_or(0.5).clamp(0.0, 1.0);
-    let target = clamp_position(
-        &monitor,
-        drag_size,
-        (cursor.x - ratio_x * drag_size.width as f64).round() as i64,
-        (cursor.y - ratio_y * drag_size.height as f64).round() as i64,
-    );
-    set_compact_position(window, target)?;
-
-    let base_target = if hover_rows > 0 {
-        clamp_position(
-            &monitor,
-            base_size,
-            target.x as i64,
-            target.y as i64 + drag_size.height as i64 - base_size.height as i64,
-        )
-    } else {
-        target
-    };
-
-    {
-        let mut state = controller
-            .state
-            .lock()
-            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
-        if hover_rows > 0 && state.hover_rows > 0 {
-            state.hover_origin = Some(base_target);
-        }
-    }
-
-    if offset.persist.unwrap_or(false) {
-        settings.update_compact_position(WindowPosition {
-            x: base_target.x,
-            y: base_target.y,
-        })?;
-        refresh_taskbar_z_order(window)?;
-    }
-    current(controller)
-}
-
 pub fn expand(
     window: &WebviewWindow,
     controller: &BubbleController,
     focus: bool,
 ) -> Result<BubblePayload, String> {
+    hide_hover_panel(window)?;
     let mut state = controller
         .state
         .lock()
@@ -679,8 +663,6 @@ pub fn expand(
     if focus {
         window.set_focus().map_err(window_error)?;
     }
-    state.hover_rows = 0;
-    state.hover_origin = None;
     state.z_order_generation = state.z_order_generation.wrapping_add(1);
     state.collapsed = false;
     Ok(BubblePayload { collapsed: false })
@@ -698,18 +680,47 @@ mod tests {
     }
 
     #[test]
-    fn hover_size_grows_for_apps_and_caps_at_eight_rows() {
+    fn hover_panel_size_grows_for_apps_and_caps_at_eight_rows() {
         assert_eq!(
-            bubble_physical_size_for_rows(1.0, 1.0, 3),
-            PhysicalSize::new(276, 144)
+            hover_panel_physical_size(1.0, 1.0, 3, 276),
+            PhysicalSize::new(276, 100)
         );
         assert_eq!(
-            bubble_physical_size_for_rows(1.0, 1.0, 8),
-            PhysicalSize::new(276, 284)
+            hover_panel_physical_size(1.0, 1.0, 8, 276),
+            PhysicalSize::new(276, 240)
         );
         assert_eq!(
-            bubble_physical_size_for_rows(1.0, 1.0, 20),
-            PhysicalSize::new(276, 284)
+            hover_panel_physical_size(1.0, 1.0, 20, 276),
+            PhysicalSize::new(276, 240)
+        );
+    }
+
+    #[test]
+    fn hover_panel_prefers_above_and_falls_below_near_top_edge() {
+        let bounds_position = PhysicalPosition::new(0, 0);
+        let bounds_size = PhysicalSize::new(1920, 1080);
+        let panel_size = PhysicalSize::new(276, 240);
+        assert_eq!(
+            hover_panel_position_in_bounds(
+                bounds_position,
+                bounds_size,
+                PhysicalPosition::new(1500, 700),
+                PhysicalSize::new(276, 46),
+                panel_size,
+                0,
+            ),
+            PhysicalPosition::new(1500, 460)
+        );
+        assert_eq!(
+            hover_panel_position_in_bounds(
+                bounds_position,
+                bounds_size,
+                PhysicalPosition::new(1500, 20),
+                PhysicalSize::new(276, 46),
+                panel_size,
+                0,
+            ),
+            PhysicalPosition::new(1500, 66)
         );
     }
 

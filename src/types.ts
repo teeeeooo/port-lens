@@ -44,6 +44,18 @@ export interface BubbleState {
   collapsed: boolean;
 }
 
+export interface CompactHoverItem {
+  id: string;
+  name: string;
+  online: boolean;
+}
+
+export interface CompactHoverPayload {
+  apps: CompactHoverItem[];
+  bubbleScale: number;
+  revision: number;
+}
+
 export interface AppSettings {
   language: "system" | "en" | "ko";
   bubbleScale: number;

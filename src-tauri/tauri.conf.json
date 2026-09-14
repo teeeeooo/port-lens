@@ -19,6 +19,23 @@
         "minHeight": 580,
         "center": true,
         "transparent": true
+      },
+      {
+        "label": "compact-hover",
+        "title": "Port Lens Apps",
+        "url": "index.html?compactHover=1",
+        "width": 276,
+        "height": 240,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "parent": "main"
       }
     ],
     "security": {

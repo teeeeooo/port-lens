@@ -1212,23 +1212,26 @@ fn minimize_main_window(
 }
 
 #[tauri::command]
-fn move_compact_bubble(
-    window: WebviewWindow,
-    controller: State<'_, bubble::BubbleController>,
-    settings: State<'_, SettingsStore>,
-    offset: bubble::BubbleDragOffset,
-) -> Result<bubble::BubblePayload, String> {
-    bubble::move_to_cursor(&window, &controller, &settings, offset)
-}
-
-#[tauri::command]
-fn set_compact_hover(
+fn show_compact_hover(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
     settings: State<'_, SettingsStore>,
     rows: u32,
-) -> Result<bubble::BubblePayload, String> {
-    bubble::set_hover_rows(&window, &controller, &settings, rows)
+) -> Result<(), String> {
+    bubble::show_hover_panel(&window, &controller, &settings, rows)
+}
+
+#[tauri::command]
+fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
+    bubble::hide_hover_panel(&window)
+}
+
+#[tauri::command]
+fn start_compact_drag(window: WebviewWindow) -> Result<(), String> {
+    bubble::hide_hover_panel(&window)?;
+    window
+        .start_dragging()
+        .map_err(|error| format!("Failed to start native compact drag: {error}"))
 }
 
 #[tauri::command]
@@ -1460,8 +1463,9 @@ pub fn run() {
             get_bubble_state,
             collapse_to_bubble,
             minimize_main_window,
-            move_compact_bubble,
-            set_compact_hover,
+            show_compact_hover,
+            hide_compact_hover,
+            start_compact_drag,
             expand_from_bubble
         ])
         .run(tauri::generate_context!())
