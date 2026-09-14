@@ -329,20 +329,55 @@ fn start_taskbar_z_order_keeper(
 ) {
 }
 
+#[cfg(windows)]
+fn set_compact_geometry(
+    window: &WebviewWindow,
+    target: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(window_error)?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            target.x,
+            target.y,
+            size.width as i32,
+            size.height as i32,
+            SWP_NOACTIVATE,
+        )
+        .map_err(|error| format!("failed to resize compact bubble: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_compact_geometry(
+    window: &WebviewWindow,
+    target: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) -> Result<(), String> {
+    window.set_size(size).map_err(window_error)?;
+    window.set_position(target).map_err(window_error)
+}
+
 fn apply_collapsed_window(
     window: &WebviewWindow,
     target: PhysicalPosition<i32>,
     size: PhysicalSize<u32>,
 ) -> Result<(), String> {
-    window.set_min_size(Some(size)).map_err(window_error)?;
-    window.set_max_size(Some(size)).map_err(window_error)?;
+    window
+        .set_min_size(None::<LogicalSize<f64>>)
+        .map_err(window_error)?;
+    window
+        .set_max_size(None::<LogicalSize<f64>>)
+        .map_err(window_error)?;
     window.set_resizable(false).map_err(window_error)?;
     window.set_decorations(false).map_err(window_error)?;
     window.set_shadow(false).map_err(window_error)?;
     window.set_always_on_top(true).map_err(window_error)?;
     let _ = window.set_skip_taskbar(true);
-    window.set_size(size).map_err(window_error)?;
-    window.set_position(target).map_err(window_error)?;
+    set_compact_geometry(window, target, size)?;
     window.show().map_err(window_error)
 }
 
@@ -434,7 +469,7 @@ pub fn resize_collapsed(
         position.x as i64 + (old_size.width as i64 - new_size.width as i64) / 2,
         position.y as i64 + (old_size.height as i64 - new_size.height as i64) / 2,
     );
-    apply_collapsed_window(window, target, new_size)?;
+    set_compact_geometry(window, target, new_size)?;
     refresh_taskbar_z_order(window)?;
     settings.update_compact_position(WindowPosition {
         x: target.x,
@@ -484,7 +519,7 @@ pub fn set_hover_rows(
     } else {
         bottom_anchored_position(&monitor, position, old_size, new_size)
     };
-    apply_collapsed_window(window, target, new_size)?;
+    set_compact_geometry(window, target, new_size)?;
     refresh_taskbar_z_order(window)?;
 
     let mut state = controller
@@ -534,10 +569,7 @@ pub fn move_to_cursor(
         (cursor.x - ratio_x * size.width as f64).round() as i64,
         (cursor.y - ratio_y * size.height as f64).round() as i64,
     );
-    window.set_min_size(Some(size)).map_err(window_error)?;
-    window.set_max_size(Some(size)).map_err(window_error)?;
-    window.set_size(size).map_err(window_error)?;
-    window.set_position(target).map_err(window_error)?;
+    set_compact_geometry(window, target, size)?;
     refresh_taskbar_z_order(window)?;
     if offset.persist.unwrap_or(false) {
         settings.update_compact_position(WindowPosition {

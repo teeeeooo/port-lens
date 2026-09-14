@@ -646,19 +646,21 @@ function App() {
         onMouseEnter={beginBubbleHover}
         onMouseLeave={endBubbleHover}
       >
-        {bubbleHoverExpanded && (
-          <div className="bubble-app-list" aria-label="Registered Apps">
-            {managedRows.map((app) => {
-              const online = Boolean(app.listener && !app.identityChanged);
-              return (
-                <div className="bubble-app-row" key={app.id} title={app.name}>
-                  <span className={`bubble-app-dot ${online ? "online" : "offline"}`} aria-hidden="true" />
-                  <span className="bubble-app-name">{app.name}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <div
+          className={`bubble-app-list ${bubbleHoverExpanded ? "visible" : "hidden"}`}
+          aria-label="Registered Apps"
+          aria-hidden={!bubbleHoverExpanded}
+        >
+          {managedRows.map((app) => {
+            const online = Boolean(app.listener && !app.identityChanged);
+            return (
+              <div className="bubble-app-row" key={app.id} title={app.name}>
+                <span className={`bubble-app-dot ${online ? "online" : "offline"}`} aria-hidden="true" />
+                <span className="bubble-app-name">{app.name}</span>
+              </div>
+            );
+          })}
+        </div>
         <div
           className="bubble-bar"
           onPointerDown={beginBubbleDrag}
