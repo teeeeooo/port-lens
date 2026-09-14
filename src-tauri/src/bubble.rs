@@ -7,13 +7,13 @@ use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow}
 use std::{thread, time::Duration};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
 };
 
 const BUBBLE_WIDTH: f64 = 276.0;
 const BUBBLE_HEIGHT: f64 = 46.0;
 const HOVER_ROW_HEIGHT: f64 = 28.0;
-const HOVER_LIST_PADDING: f64 = 8.0;
+const HOVER_LIST_PADDING: f64 = 14.0;
 const MAX_HOVER_ROWS: u32 = 8;
 const DESKTOP_EDGE_MARGIN: i32 = 12;
 const MIN_WIDTH: f64 = 800.0;
@@ -361,6 +361,35 @@ fn set_compact_geometry(
     window.set_position(target).map_err(window_error)
 }
 
+#[cfg(windows)]
+fn set_compact_position(
+    window: &WebviewWindow,
+    target: PhysicalPosition<i32>,
+) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(window_error)?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            target.x,
+            target.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .map_err(|error| format!("failed to move compact bubble: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_compact_position(
+    window: &WebviewWindow,
+    target: PhysicalPosition<i32>,
+) -> Result<(), String> {
+    window.set_position(target).map_err(window_error)
+}
+
 fn apply_collapsed_window(
     window: &WebviewWindow,
     target: PhysicalPosition<i32>,
@@ -520,7 +549,6 @@ pub fn set_hover_rows(
         bottom_anchored_position(&monitor, position, old_size, new_size)
     };
     set_compact_geometry(window, target, new_size)?;
-    refresh_taskbar_z_order(window)?;
 
     let mut state = controller
         .state
@@ -542,17 +570,17 @@ pub fn move_to_cursor(
     settings: &SettingsStore,
     offset: BubbleDragOffset,
 ) -> Result<BubblePayload, String> {
-    {
-        let mut state = controller
+    let hover_rows = {
+        let state = controller
             .state
             .lock()
             .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
         if !state.collapsed {
             return Ok(BubblePayload { collapsed: false });
         }
-        state.hover_rows = 0;
-        state.hover_origin = None;
-    }
+        state.hover_rows
+    };
+
     let cursor = window.cursor_position().map_err(window_error)?;
     let monitor = window
         .monitor_from_point(cursor.x, cursor.y)
@@ -560,22 +588,46 @@ pub fn move_to_cursor(
         .or_else(|| window.current_monitor().ok().flatten())
         .ok_or_else(|| "No monitor is available while moving the compact bubble.".to_string())?;
     let current_settings = settings.get()?;
-    let size = bubble_physical_size(current_settings.bubble_scale, monitor.scale_factor());
+    let scale = monitor.scale_factor();
+    let base_size = bubble_physical_size(current_settings.bubble_scale, scale);
+    let drag_size = bubble_physical_size_for_rows(current_settings.bubble_scale, scale, hover_rows);
     let ratio_x = offset.offset_ratio_x.unwrap_or(0.5).clamp(0.0, 1.0);
     let ratio_y = offset.offset_ratio_y.unwrap_or(0.5).clamp(0.0, 1.0);
     let target = clamp_position(
         &monitor,
-        size,
-        (cursor.x - ratio_x * size.width as f64).round() as i64,
-        (cursor.y - ratio_y * size.height as f64).round() as i64,
+        drag_size,
+        (cursor.x - ratio_x * drag_size.width as f64).round() as i64,
+        (cursor.y - ratio_y * drag_size.height as f64).round() as i64,
     );
-    set_compact_geometry(window, target, size)?;
-    refresh_taskbar_z_order(window)?;
+    set_compact_position(window, target)?;
+
+    let base_target = if hover_rows > 0 {
+        clamp_position(
+            &monitor,
+            base_size,
+            target.x as i64,
+            target.y as i64 + drag_size.height as i64 - base_size.height as i64,
+        )
+    } else {
+        target
+    };
+
+    {
+        let mut state = controller
+            .state
+            .lock()
+            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
+        if hover_rows > 0 && state.hover_rows > 0 {
+            state.hover_origin = Some(base_target);
+        }
+    }
+
     if offset.persist.unwrap_or(false) {
         settings.update_compact_position(WindowPosition {
-            x: target.x,
-            y: target.y,
+            x: base_target.x,
+            y: base_target.y,
         })?;
+        refresh_taskbar_z_order(window)?;
     }
     current(controller)
 }
@@ -649,15 +701,15 @@ mod tests {
     fn hover_size_grows_for_apps_and_caps_at_eight_rows() {
         assert_eq!(
             bubble_physical_size_for_rows(1.0, 1.0, 3),
-            PhysicalSize::new(276, 138)
+            PhysicalSize::new(276, 144)
         );
         assert_eq!(
             bubble_physical_size_for_rows(1.0, 1.0, 8),
-            PhysicalSize::new(276, 278)
+            PhysicalSize::new(276, 284)
         );
         assert_eq!(
             bubble_physical_size_for_rows(1.0, 1.0, 20),
-            PhysicalSize::new(276, 278)
+            PhysicalSize::new(276, 284)
         );
     }
 

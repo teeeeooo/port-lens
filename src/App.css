@@ -50,26 +50,28 @@ html.bubble-mode #root {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--bubble-line);
-  border-radius: 10px;
-  clip-path: inset(0 round 10px);
-  background: var(--bubble-glass);
+  background: transparent;
   color: var(--bubble-text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), inset 0 -1px 0 rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(28px) saturate(115%);
-  -webkit-backdrop-filter: blur(28px) saturate(115%);
   user-select: none;
   touch-action: none;
 }
 
 .bubble-bar {
   width: 100%;
-  min-height: calc(44px * var(--bubble-scale));
+  height: calc(46px * var(--bubble-scale));
+  flex: 0 0 calc(46px * var(--bubble-scale));
   display: flex;
   align-items: center;
   gap: calc(5px * var(--bubble-scale));
   padding: calc(5px * var(--bubble-scale));
   margin-top: auto;
+  overflow: hidden;
+  border: 1px solid var(--bubble-line);
+  border-radius: calc(10px * var(--bubble-scale));
+  background: var(--bubble-glass);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), inset 0 -1px 0 rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(28px) saturate(115%);
+  -webkit-backdrop-filter: blur(28px) saturate(115%);
   cursor: grab;
 }
 
@@ -79,10 +81,15 @@ html.bubble-mode #root {
   width: 100%;
   flex: 1 1 auto;
   min-height: 0;
+  margin-bottom: calc(4px * var(--bubble-scale));
   overflow-y: auto;
   padding: calc(4px * var(--bubble-scale)) calc(7px * var(--bubble-scale));
-  border-bottom: 1px solid var(--bubble-line-soft);
-  background: rgba(16, 21, 30, 0.18);
+  border: 1px solid var(--bubble-line-soft);
+  border-radius: calc(10px * var(--bubble-scale));
+  background: var(--bubble-glass);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(28px) saturate(115%);
+  -webkit-backdrop-filter: blur(28px) saturate(115%);
   cursor: default;
   scrollbar-width: thin;
 }
@@ -90,9 +97,10 @@ html.bubble-mode #root {
 .bubble-app-list.hidden {
   flex: 0 0 0;
   height: 0;
+  margin-bottom: 0;
   padding-top: 0;
   padding-bottom: 0;
-  border-bottom: 0;
+  border: 0;
   overflow: hidden;
   visibility: hidden;
   pointer-events: none;

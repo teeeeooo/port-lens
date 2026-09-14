@@ -63,6 +63,10 @@ function elapsedSeconds(elapsedMs: number) {
   return seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString();
 }
 
+function nextAnimationFrame() {
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
 function normalizedProcessName(value?: string) {
   return value?.trim().toLowerCase().replace(/\.exe$/, "") ?? "";
 }
@@ -147,6 +151,8 @@ function App() {
   const bubbleHoverOpenTimer = useRef<number | undefined>(undefined);
   const bubbleHoverCloseTimer = useRef<number | undefined>(undefined);
   const bubbleHoverSuppressUntilReentry = useRef(false);
+  const bubbleHoverTransition = useRef(0);
+  const bubbleHoverNativeExpanded = useRef(false);
   const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedStateEpoch = useRef(0);
@@ -158,6 +164,7 @@ function App() {
     offsetRatioX: number;
     offsetRatioY: number;
     moved: boolean;
+    hoverExpanded: boolean;
   } | null>(null);
   const uiLanguage = resolveLanguage(settings.language);
 
@@ -283,6 +290,7 @@ function App() {
     document.documentElement.classList.toggle("bubble-mode", bubbleMode);
     if (!bubbleMode) {
       bubbleHoverDesired.current = false;
+      bubbleHoverNativeExpanded.current = false;
       setBubbleHoverExpanded(false);
     }
     return () => document.documentElement.classList.remove("bubble-mode");
@@ -439,6 +447,7 @@ function App() {
     try {
       bubbleHoverDesired.current = false;
       const state = await expandFromBubble();
+      bubbleHoverNativeExpanded.current = false;
       setBubbleHoverExpanded(false);
       setBubbleMode(state.collapsed);
     } catch (bubbleError) {
@@ -449,18 +458,23 @@ function App() {
   const beginBubbleHover = () => {
     if (bubbleHoverSuppressUntilReentry.current || bubbleDrag.current) return;
     bubbleHoverDesired.current = true;
-    if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
+    bubbleHoverTransition.current += 1;
+    if (bubbleHoverCloseTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverCloseTimer.current);
+      bubbleHoverCloseTimer.current = undefined;
+    }
     if (bubbleHoverExpanded || apps.length === 0) return;
     if (bubbleHoverOpenTimer.current !== undefined) window.clearTimeout(bubbleHoverOpenTimer.current);
     bubbleHoverOpenTimer.current = window.setTimeout(() => {
       bubbleHoverOpenTimer.current = undefined;
+      const transition = ++bubbleHoverTransition.current;
       void setCompactHover(apps.length)
         .then((state) => {
-          if (!bubbleHoverDesired.current) {
-            void setCompactHover(0);
-            return;
-          }
-          if (state.collapsed) setBubbleHoverExpanded(true);
+          if (!state.collapsed) return;
+          bubbleHoverNativeExpanded.current = true;
+          if (bubbleDrag.current) bubbleDrag.current.hoverExpanded = true;
+          if (transition !== bubbleHoverTransition.current || !bubbleHoverDesired.current || bubbleDrag.current) return;
+          setBubbleHoverExpanded(true);
         })
         .catch((bubbleError) => setError(messageOf(bubbleError)));
     }, 250);
@@ -468,24 +482,35 @@ function App() {
 
   const endBubbleHover = () => {
     bubbleHoverDesired.current = false;
+    bubbleHoverTransition.current += 1;
     if (!bubbleDrag.current) bubbleHoverSuppressUntilReentry.current = false;
     if (bubbleHoverOpenTimer.current !== undefined) {
       window.clearTimeout(bubbleHoverOpenTimer.current);
       bubbleHoverOpenTimer.current = undefined;
     }
-    if (!bubbleHoverExpanded) return;
+    if (bubbleDrag.current) return;
     if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
     bubbleHoverCloseTimer.current = window.setTimeout(() => {
       bubbleHoverCloseTimer.current = undefined;
-      void setCompactHover(0)
-        .then(() => setBubbleHoverExpanded(false))
-        .catch((bubbleError) => setError(messageOf(bubbleError)));
+      const transition = ++bubbleHoverTransition.current;
+      setBubbleHoverExpanded(false);
+      void nextAnimationFrame().then(async () => {
+        if (transition !== bubbleHoverTransition.current || bubbleHoverDesired.current || bubbleDrag.current) return;
+        try {
+          const state = await setCompactHover(0);
+          bubbleHoverNativeExpanded.current = false;
+          setBubbleMode(state.collapsed);
+        } catch (bubbleError) {
+          setError(messageOf(bubbleError));
+        }
+      });
     }, 140);
   };
 
   const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as Element).closest("button")) return;
     bubbleHoverDesired.current = false;
+    bubbleHoverTransition.current += 1;
     if (bubbleHoverOpenTimer.current !== undefined) {
       window.clearTimeout(bubbleHoverOpenTimer.current);
       bubbleHoverOpenTimer.current = undefined;
@@ -494,14 +519,16 @@ function App() {
       window.clearTimeout(bubbleHoverCloseTimer.current);
       bubbleHoverCloseTimer.current = undefined;
     }
-    const rect = event.currentTarget.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || 1;
+    const viewportHeight = window.innerHeight || 1;
     bubbleDrag.current = {
       pointerId: event.pointerId,
       startX: event.screenX,
       startY: event.screenY,
-      offsetRatioX: Math.max(0, Math.min(1, (event.clientX - rect.left) / (rect.width || 1))),
-      offsetRatioY: Math.max(0, Math.min(1, (event.clientY - rect.top) / (rect.height || 1))),
+      offsetRatioX: Math.max(0, Math.min(1, event.clientX / viewportWidth)),
+      offsetRatioY: Math.max(0, Math.min(1, event.clientY / viewportHeight)),
       moved: false,
+      hoverExpanded: bubbleHoverExpanded || bubbleHoverNativeExpanded.current,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -514,13 +541,28 @@ function App() {
     if (!drag.moved) {
       drag.moved = true;
       bubbleHoverDesired.current = false;
-      setBubbleHoverExpanded(false);
       event.currentTarget.classList.add("dragging");
     }
     void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
       .then((state) => setBubbleMode(state.collapsed))
       .catch((bubbleError) => setError(messageOf(bubbleError)));
     event.preventDefault();
+  };
+
+  const settleBubbleDrag = async (drag: NonNullable<typeof bubbleDrag.current>) => {
+    try {
+      const state = await moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true);
+      setBubbleMode(state.collapsed);
+      if (drag.hoverExpanded) {
+        setBubbleHoverExpanded(false);
+        await nextAnimationFrame();
+        const collapsedState = await setCompactHover(0);
+        bubbleHoverNativeExpanded.current = false;
+        setBubbleMode(collapsedState.collapsed);
+      }
+    } catch (bubbleError) {
+      setError(messageOf(bubbleError));
+    }
   };
 
   const finishBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -531,9 +573,7 @@ function App() {
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
     if (drag.moved) {
       bubbleHoverSuppressUntilReentry.current = true;
-      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
-        .then((state) => setBubbleMode(state.collapsed))
-        .catch((bubbleError) => setError(messageOf(bubbleError)));
+      void settleBubbleDrag(drag);
     } else {
       void expandBubble();
     }
@@ -548,9 +588,7 @@ function App() {
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
     if (drag.moved) {
       bubbleHoverSuppressUntilReentry.current = true;
-      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
-        .then((state) => setBubbleMode(state.collapsed))
-        .catch((bubbleError) => setError(messageOf(bubbleError)));
+      void settleBubbleDrag(drag);
     }
   };
 

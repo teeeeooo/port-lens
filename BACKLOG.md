@@ -1,6 +1,6 @@
 # Port Lens Backlog
 
-Last updated: 2026-09-12
+Last updated: 2026-09-14
 
 Items are ordered by intended implementation sequence after the current stability merge.
 
@@ -28,63 +28,47 @@ Acceptance criteria:
 - mixed-DPI movement remains correct
 - saved compact position restores and clamps correctly after restart
 
+This records the PR #2 baseline. PR #4 intentionally supersedes the Windows drag boundary by allowing user-selected taskbar overlap with topmost protection.
+
 Suggested branch: `feature/compact-position-polish`
 
 ## 2. Verified managed runtime reattach
 
-Status: implemented on `feature/runtime-reattach`; macOS common-path smoke passes. Native macOS/Windows CI and refreshed Windows packaging pass at `afb6d3e`; awaiting only manual Windows restart → Stop/Restart verification before merge.
+Status: merged to `main` via PR #3 (`bee52e3`). Native macOS/Windows CI passed, and manual Windows restart → verified reattach → Stop validation passed. The transient lifecycle-verification message observed during Stop was also removed before merge.
 
-Goal: restore safe Stop / Restart control for a server that was started by Port Lens, survived Port Lens exit, and is rediscovered after Port Lens restarts.
-
-Implemented behavior on the feature branch:
-- new Port Lens starts persist listener PID/name/command plus listener creation time
-- the managed root `cmd.exe` PID, creation time, and command line are persisted
-- after Port Lens restarts, targeted Windows process ancestry is queried only for candidate Apps
-- reattach requires exact listener generation, command identity, persisted root generation, and verified ancestor relationship
-- verified runtimes regain Stop / Restart; ambiguous or stale identities remain non-destructive
-- PID reuse is rejected by persisted process creation-time comparison
-- Stop re-verifies the persisted root generation immediately before terminating a reattached runtime; changed identity revokes Stop authority
-- transient ancestry/CIM or command-line lookup failures are retryable instead of permanently suppressing reattach for the same PID
-- macOS smoke coverage exercises a real Node listener through Start-style spawn, targeted listener discovery, managed-identity persistence/reload, and Stop cleanup
-
-Required design constraints:
-- identify the current listener PID for the configured Port
-- verify the persisted managed process identity
-- inspect the Windows parent-process chain and locate the expected Port Lens launch root where possible
-- compare process/command evidence before granting ownership
-- defend against PID reuse and unrelated processes taking the same Port
-- never enable destructive lifecycle actions on ambiguous identity
-
-Acceptance criteria:
-- verified surviving Port Lens-started Apps become reattached runtimes after restart
-- Stop terminates only the verified managed process tree
-- Restart performs verified Stop followed by the configured Start Command
-- mismatched or ambiguous processes remain Online/Changed without Stop / Restart authority
-- external listeners are never silently adopted
-- tests cover PID reuse/mismatch and successful reattach cases
-
-Suggested branch: `feature/runtime-reattach`
+Implemented behavior:
+- persisted listener/root generation and command identity are required before reattach
+- PID reuse and unrelated listeners are rejected
+- reattached Stop re-verifies root identity immediately before termination
+- Stop / Restart temporarily suppress reattach for the affected App
+- monitored-listener/reattach refresh completes before managed runtime state is read
+- lifecycle actions do not expose provisional reattach state in the App card
 
 ## 3. Compact hover App list
 
-Status: implemented on stacked branch `feature/compact-app-hover` via PR #4; awaiting combined Windows CI/package and one-pass manual Windows validation with PR #3.
+Status: active on `feature/compact-app-hover` via PR #4, retargeted to `main`. Latest A-D interaction fixes are implemented and pass local frontend/Rust/native+Windows-target clippy validation. Awaiting fresh Windows package and manual validation before merge.
 
-Goal: show a lightweight registered-App status list when the user hovers over the compact bubble.
+Goal: keep the compact bar stable while exposing a lightweight registered-App list on hover and preserving reliable drag behavior.
 
 Implemented behavior:
-- hover expands the native compact window upward after a short delay
-- each registered App shows only its name and a status dot
-- green means the expected App listener is online; gray covers Offline, Starting, or Different-process states
+- hovering expands the native compact window upward after a short delay
+- each registered App shows only its name and a green/gray status dot
 - visible height is capped at 8 Apps; additional Apps remain scrollable
-- hover close restores the original compact position instead of persisting a transient expanded position
-- the list is display-only: no Start / Stop / Restart / Open controls are added
-- PR #4 is stacked on PR #3 so one Windows Portable can validate both feature sets together
+- compact bar and hover list render as separate rounded translucent surfaces
+- hover close hides the list before the native window shrinks
+- drag never resizes the native window while the pointer gesture is active
+- dragging an already-expanded hover moves the expanded geometry as one unit and collapses after release
+- drag pointer offsets are relative to the whole native compact window, preserving the grab point while expanded
+- Windows drag uses position-only `SetWindowPos`; per-move z-order refresh was removed
+- intentional taskbar overlap remains protected by the periodic topmost keeper and a final drag-end correction
+- the list remains display-only; no App lifecycle controls are added
 
-Merge order:
-- validate the combined Portable once on Windows
-- merge PR #3 first
-- retarget PR #4 to `main`
-- confirm PR #4 diff contains only compact-hover changes, rerun CI, then merge
+Manual acceptance gate:
+- no compact-bar flash/recreation effect on repeated hover open/close
+- no dropped drag while moving quickly or repeatedly
+- hover-open drag collapses cleanly after release without position drift
+- taskbar overlap and multi-monitor placement remain correct
+- saved compact position restores after restart
 
 Suggested branch: `feature/compact-app-hover`
 
