@@ -209,10 +209,13 @@ function App() {
   }, []);
 
   const refreshAll = useCallback(async (silent = false, forceManaged = false) => {
+    const managedTask = (async () => {
+      await refreshMonitored();
+      await refreshManagedState(forceManaged);
+    })();
     await Promise.all([
       refreshInventory(silent),
-      refreshMonitored(),
-      refreshManagedState(forceManaged),
+      managedTask,
     ]);
   }, [refreshInventory, refreshManagedState, refreshMonitored]);
 
@@ -236,7 +239,10 @@ function App() {
   useEffect(() => {
     let stopped = false;
     let timer: number | undefined;
-    const refreshFastState = () => Promise.all([refreshMonitored(), refreshManagedState()]);
+    const refreshFastState = async () => {
+      await refreshMonitored();
+      await refreshManagedState();
+    };
     const scheduleNext = () => {
       if (stopped) return;
       timer = window.setTimeout(async () => {
@@ -697,8 +703,12 @@ function App() {
                     <div className="conflict-note">{t(uiLanguage, "differentProcessWarning")}</div>
                   )}
 
-                  {app.recoveredManaged && (
+                  {app.recoveredManaged && !appBusy && (
                     <div className="managed-origin-note">{t(uiLanguage, "previouslyManagedNote")}</div>
+                  )}
+
+                  {app.runtime?.reattached && !appBusy && (
+                    <div className="managed-origin-note">{t(uiLanguage, "reattachedManagedNote")}</div>
                   )}
 
                   {app.lastExit && !app.runtime && (

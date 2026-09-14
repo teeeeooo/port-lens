@@ -1,15 +1,35 @@
 use crate::diagnostics::ManagedLogPaths;
+use serde::Deserialize;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 #[cfg(windows)]
+use std::io::Read;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use std::thread;
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+#[cfg(windows)]
+const PROCESS_QUERY_TIMEOUT: Duration = Duration::from_secs(12);
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessSnapshot {
+    pub pid: u32,
+    pub parent_pid: u32,
+    pub process_name: String,
+    #[serde(default)]
+    pub command_line: Option<String>,
+    pub creation_time: String,
+}
 
 pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result<Child, String> {
     if command.trim().is_empty() {
@@ -53,6 +73,128 @@ pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result
         .spawn();
 
     child.map_err(|error| format!("Failed to start command: {error}"))
+}
+
+#[cfg(windows)]
+pub fn process_ancestry(pid: u32) -> Result<Vec<ProcessSnapshot>, String> {
+    guard_pid_for_query(pid)?;
+    let script = format!(
+        r#"
+$current = [uint32]{pid}
+$items = @()
+$byId = @{{}}
+try {{
+  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,CreationDate -ErrorAction Stop | ForEach-Object {{
+    $byId[[uint32]$_.ProcessId] = $_
+  }}
+}} catch {{
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}}
+for ($depth = 0; $depth -lt 16 -and $current -gt 0; $depth++) {{
+  $proc = $byId[$current]
+  if ($null -eq $proc) {{ break }}
+  $creation = ''
+  if ($null -ne $proc.CreationDate) {{ $creation = $proc.CreationDate.ToUniversalTime().ToString('o') }}
+  $items += [pscustomobject]@{{
+    pid = [uint32]$proc.ProcessId
+    parentPid = [uint32]$proc.ParentProcessId
+    processName = [string]$proc.Name
+    commandLine = if ($null -eq $proc.CommandLine) {{ $null }} else {{ [string]$proc.CommandLine }}
+    creationTime = $creation
+  }}
+  $next = [uint32]$proc.ParentProcessId
+  if ($next -eq 0 -or $next -eq $current) {{ break }}
+  $current = $next
+}}
+ConvertTo-Json -InputObject @($items) -Compress
+"#
+    );
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW);
+    let (status, stdout, stderr) = run_hidden_with_timeout(command, PROCESS_QUERY_TIMEOUT)?;
+    if !status.success() {
+        return Err(if stderr.trim().is_empty() {
+            format!("Process ancestry query exited with {status}")
+        } else {
+            format!("Process ancestry query: {}", stderr.trim())
+        });
+    }
+    parse_process_ancestry(&stdout)
+}
+
+#[cfg(not(windows))]
+pub fn process_ancestry(_pid: u32) -> Result<Vec<ProcessSnapshot>, String> {
+    Err("Managed runtime reattach is currently supported on Windows only.".into())
+}
+
+#[cfg(windows)]
+fn guard_pid_for_query(pid: u32) -> Result<(), String> {
+    if pid == 0 {
+        return Err("Cannot query PID 0.".into());
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn parse_process_ancestry(input: &str) -> Result<Vec<ProcessSnapshot>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(trimmed).map_err(|error| format!("Invalid process ancestry JSON: {error}"))
+}
+
+#[cfg(windows)]
+fn run_hidden_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<(std::process::ExitStatus, String, String), String> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to query process ancestry: {error}"))?;
+    let stdout = child.stdout.take().map(spawn_pipe_reader);
+    let stderr = child.stderr.take().map(spawn_pipe_reader);
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Process ancestry query timed out after {}s",
+                    timeout.as_secs()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Failed while waiting for process ancestry query: {error}"
+                ))
+            }
+        }
+    };
+    let stdout = stdout
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    Ok((status, stdout, stderr))
+}
+
+#[cfg(windows)]
+fn spawn_pipe_reader(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut value = String::new();
+        let _ = pipe.read_to_string(&mut value);
+        value
+    })
 }
 
 pub fn terminate_tree(pid: u32) -> Result<(), String> {
@@ -164,6 +306,22 @@ mod tests {
         }
         assert!(captured, "expected stdout and stderr markers in App logs");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_process_ancestry_json() {
+        let json = r#"[{"pid":42,"parentPid":41,"processName":"node.exe","commandLine":"node server.js","creationTime":"2026-09-11T00:00:00.0000000Z"},{"pid":41,"parentPid":7,"processName":"cmd.exe","commandLine":"cmd.exe /D /S /C node server.js","creationTime":"2026-09-10T23:59:59.0000000Z"}]"#;
+        let result = parse_process_ancestry(json).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].pid, 42);
+        assert_eq!(result[1].process_name, "cmd.exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_process_ancestry_includes_current_process() {
+        let result = process_ancestry(std::process::id()).unwrap();
+        assert!(result.iter().any(|item| item.pid == std::process::id()));
     }
 
     #[cfg(windows)]

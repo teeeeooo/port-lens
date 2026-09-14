@@ -59,7 +59,7 @@ export async function mockStartApp(appId: string) {
   const app = state.apps.find((item) => item.id === appId);
   if (!app) throw new Error("Mock managed app not found");
   if (!app.command || !app.cwd) throw new Error("Configure a start command and working directory before starting this App.");
-  const runtime = { appId, rootPid: 40000 + state.runtimes.length + 1 };
+  const runtime: ManagedRuntime = { appId, rootPid: 40000 + state.runtimes.length + 1, reattached: false };
   state.exits = (state.exits ?? []).filter((exit) => exit.appId !== appId);
   state.runtimes = state.runtimes.filter((item) => item.appId !== appId);
   state.runtimes.push(runtime);

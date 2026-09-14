@@ -6,7 +6,7 @@ Items are ordered by intended implementation sequence after the current stabilit
 
 ## 1. Compact position polish
 
-Status: implemented on `feature/compact-position-polish`; awaiting native Windows package/manual verification before merge.
+Status: merged to `main` via PR #2 (`249d111`). Windows CI and bundle packaging passed; implementation is now the baseline.
 
 Goal: allow the Windows compact bubble to sit directly above the taskbar without an artificial gap.
 
@@ -32,12 +32,20 @@ Suggested branch: `feature/compact-position-polish`
 
 ## 2. Verified managed runtime reattach
 
+Status: implemented on `feature/runtime-reattach`; macOS common-path smoke passes. Native macOS/Windows CI and refreshed Windows packaging pass at `afb6d3e`; awaiting only manual Windows restart → Stop/Restart verification before merge.
+
 Goal: restore safe Stop / Restart control for a server that was started by Port Lens, survived Port Lens exit, and is rediscovered after Port Lens restarts.
 
-Current behavior:
-- persisted managed identity prevents a surviving server from being misclassified as a different process
-- monitoring and Open work after Port Lens restarts
-- Stop / Restart remain disabled because the original `Child` handle and session-local root ownership are gone
+Implemented behavior on the feature branch:
+- new Port Lens starts persist listener PID/name/command plus listener creation time
+- the managed root `cmd.exe` PID, creation time, and command line are persisted
+- after Port Lens restarts, targeted Windows process ancestry is queried only for candidate Apps
+- reattach requires exact listener generation, command identity, persisted root generation, and verified ancestor relationship
+- verified runtimes regain Stop / Restart; ambiguous or stale identities remain non-destructive
+- PID reuse is rejected by persisted process creation-time comparison
+- Stop re-verifies the persisted root generation immediately before terminating a reattached runtime; changed identity revokes Stop authority
+- transient ancestry/CIM or command-line lookup failures are retryable instead of permanently suppressing reattach for the same PID
+- macOS smoke coverage exercises a real Node listener through Start-style spawn, targeted listener discovery, managed-identity persistence/reload, and Stop cleanup
 
 Required design constraints:
 - identify the current listener PID for the configured Port
