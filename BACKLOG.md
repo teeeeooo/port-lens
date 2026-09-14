@@ -57,10 +57,10 @@ Implemented behavior:
 - visible height is capped at 8 Apps; additional Apps remain scrollable
 - hover data is reused from the main monitoring state; the panel does not run its own listener/process scan
 - a render revision handshake prevents the native hover window from being shown before its requested DOM is committed
-- the compact bar uses Tauri's built-in deep drag-region path directly from mouse-down; the 4 px threshold, pointer capture, and custom drag command have been removed
-- the main window explicitly grants `core:window:allow-start-dragging`; `core:default` does not include native start-dragging
-- repeated pointermove IPC, cursor polling, and manual per-frame `SetWindowPos` movement have been removed
-- the Windows taskbar z-order keeper pauses while native movement is active and resumes after debounced position persistence
+- compact drag starts through one immediate `start_compact_drag` command on mouse-down; the 4 px threshold and pointer capture remain removed
+- that command hides the hover window once, suspends the taskbar keeper, and delegates movement to Tauri/Windows native `start_dragging()`
+- repeated pointermove IPC, cursor polling, manual per-frame `SetWindowPos`, and per-`Moved` hover `hide()` calls have been removed
+- Windows compact `Moved`/`Resized` callbacks do no drag-time persistence or native window work; final position is persisted once after left-button release, then z-order protection resumes
 - the compact WebView surface uses rounded `clip-path` clipping on both shell and bar, restoring all four rounded corners
 - main-window startup defaults to 1020×680 and clamps both saved/default bounds into the active monitor work area
 - frontend state-dependent commands are blocked behind a startup-ready gate until all backend managed state is installed

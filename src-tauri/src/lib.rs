@@ -22,6 +22,9 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 
+#[cfg(windows)]
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
 const EARLY_EXIT_THRESHOLD: Duration = Duration::from_secs(10);
@@ -1237,6 +1240,69 @@ fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
     bubble::hide_hover_panel(&window)
 }
 
+#[cfg(windows)]
+fn left_mouse_button_down() -> bool {
+    unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(windows)]
+fn finish_compact_drag_when_released(window: WebviewWindow) {
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(16)).await;
+        while left_mouse_button_down() {
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+
+        let main_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(window) = main_app.get_webview_window("main") else {
+                return;
+            };
+            let controller = main_app.state::<bubble::BubbleController>();
+            let settings = main_app.state::<SettingsStore>();
+            if bubble::is_collapsed(&controller).unwrap_or(false) {
+                if let Err(error) =
+                    bubble::persist_compact_position(&window, &controller, &settings)
+                {
+                    main_app.state::<Diagnostics>().record(
+                        "WARN",
+                        "compact_drag_persist",
+                        format!("error={error}"),
+                    );
+                }
+            }
+            let _ = bubble::set_native_move_active(&controller, false);
+        });
+    });
+}
+
+#[tauri::command]
+fn start_compact_drag(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+) -> Result<(), String> {
+    if !bubble::is_collapsed(&controller)? {
+        return Err("Compact drag is only available while the compact monitor is active.".into());
+    }
+
+    bubble::set_native_move_active(&controller, true)?;
+    if let Err(error) = bubble::hide_hover_panel(&window) {
+        let _ = bubble::set_native_move_active(&controller, false);
+        return Err(error);
+    }
+    if let Err(error) = window.start_dragging() {
+        let _ = bubble::set_native_move_active(&controller, false);
+        return Err(format!("Failed to start native compact drag: {error}"));
+    }
+
+    #[cfg(windows)]
+    finish_compact_drag_when_released(window);
+    #[cfg(not(windows))]
+    bubble::set_native_move_active(&controller, false)?;
+    Ok(())
+}
+
 #[tauri::command]
 fn expand_from_bubble(
     window: WebviewWindow,
@@ -1422,6 +1488,12 @@ pub fn run() {
                 }
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                     if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        let controller = window.app_handle().state::<bubble::BubbleController>();
+                        let collapsed = bubble::is_collapsed(&controller).unwrap_or(false);
+                        if collapsed && cfg!(target_os = "windows") {
+                            return;
+                        }
+
                         let minimized = webview.is_minimized().unwrap_or(false);
                         if minimized {
                             let settings = window.app_handle().state::<SettingsStore>();
@@ -1444,14 +1516,6 @@ pub fn run() {
                                 }
                             }
                         } else {
-                            if matches!(event, WindowEvent::Moved(_)) {
-                                let controller =
-                                    window.app_handle().state::<bubble::BubbleController>();
-                                if bubble::is_collapsed(&controller).unwrap_or(false) {
-                                    let _ = bubble::set_native_move_active(&controller, true);
-                                    let _ = bubble::hide_hover_panel(&webview);
-                                }
-                            }
                             window_state::schedule_persist(webview);
                         }
                     }
@@ -1481,6 +1545,7 @@ pub fn run() {
             minimize_main_window,
             show_compact_hover,
             hide_compact_hover,
+            start_compact_drag,
             expand_from_bubble
         ])
         .run(tauri::generate_context!())

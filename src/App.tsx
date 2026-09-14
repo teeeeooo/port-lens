@@ -20,6 +20,7 @@ import {
   removeManagedApp,
   restartManagedApp,
   saveManagedApp,
+  startCompactDrag,
   startManagedApp,
   stopManagedApp,
   updateSettings,
@@ -741,9 +742,10 @@ function App() {
       >
         <div
           className="bubble-bar"
-          data-tauri-drag-region="deep"
           onMouseDown={(event) => {
-            if (!(event.target as Element).closest("button")) prepareNativeBubbleDrag();
+            if ((event.target as Element).closest("button")) return;
+            prepareNativeBubbleDrag();
+            void startCompactDrag().catch((bubbleError) => setError(messageOf(bubbleError)));
           }}
         >
           <div className="bubble-grip" aria-hidden="true">

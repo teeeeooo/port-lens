@@ -91,6 +91,9 @@ export const showCompactHover = (rows: number) =>
 export const hideCompactHover = () =>
   isDevMockMode ? Promise.resolve() : invoke<void>("hide_compact_hover");
 
+export const startCompactDrag = () =>
+  isDevMockMode ? Promise.resolve() : invoke<void>("start_compact_drag");
+
 export const expandFromBubble = () =>
   isDevMockMode
     ? Promise.resolve<BubbleState>({ collapsed: false })
