@@ -1,7 +1,14 @@
 use crate::settings::{SettingsStore, WindowPosition};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
+
+#[cfg(windows)]
+use std::{thread, time::Duration};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{
+    SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+};
 
 const BUBBLE_WIDTH: f64 = 276.0;
 const BUBBLE_HEIGHT: f64 = 46.0;
@@ -32,6 +39,10 @@ impl CompactPositionPolicy {
             Self::Windows => 0,
             Self::Desktop => DESKTOP_EDGE_MARGIN,
         }
+    }
+
+    fn allows_reserved_area(self) -> bool {
+        matches!(self, Self::Windows)
     }
 }
 
@@ -73,12 +84,13 @@ struct BubbleState {
     collapsed: bool,
     hover_rows: u32,
     hover_origin: Option<PhysicalPosition<i32>>,
+    z_order_generation: u64,
     expanded: Option<ExpandedWindow>,
 }
 
 #[derive(Debug, Default)]
 pub struct BubbleController {
-    state: Mutex<BubbleState>,
+    state: Arc<Mutex<BubbleState>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -142,15 +154,27 @@ fn clamp_position(
     desired_x: i64,
     desired_y: i64,
 ) -> PhysicalPosition<i32> {
-    let work = monitor.work_area();
-    clamp_to_work_area(
-        work.position,
-        work.size,
-        size,
-        desired_x,
-        desired_y,
-        CompactPositionPolicy::current().edge_margin(),
-    )
+    let policy = CompactPositionPolicy::current();
+    if policy.allows_reserved_area() {
+        clamp_to_work_area(
+            *monitor.position(),
+            *monitor.size(),
+            size,
+            desired_x,
+            desired_y,
+            policy.edge_margin(),
+        )
+    } else {
+        let work = monitor.work_area();
+        clamp_to_work_area(
+            work.position,
+            work.size,
+            size,
+            desired_x,
+            desired_y,
+            policy.edge_margin(),
+        )
+    }
 }
 
 fn bottom_anchored_position(
@@ -176,7 +200,14 @@ fn default_collapsed_position(
     let edge_margin = CompactPositionPolicy::current().edge_margin();
     let desired_x =
         work.position.x as i64 + work.size.width as i64 - size.width as i64 - edge_margin as i64;
-    clamp_position(monitor, size, desired_x, desired_y as i64)
+    clamp_to_work_area(
+        work.position,
+        work.size,
+        size,
+        desired_x,
+        desired_y as i64,
+        edge_margin,
+    )
 }
 
 fn monitor_for_saved_position(
@@ -186,6 +217,116 @@ fn monitor_for_saved_position(
     window
         .monitor_from_point(saved.x as f64, saved.y as f64)
         .map_err(window_error)
+}
+
+#[cfg(any(windows, test))]
+fn rect_overlaps_reserved_area(
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    screen_position: PhysicalPosition<i32>,
+    screen_size: PhysicalSize<u32>,
+    work_position: PhysicalPosition<i32>,
+    work_size: PhysicalSize<u32>,
+) -> bool {
+    let left = position.x as i64;
+    let top = position.y as i64;
+    let right = left + size.width as i64;
+    let bottom = top + size.height as i64;
+    let screen_left = screen_position.x as i64;
+    let screen_top = screen_position.y as i64;
+    let screen_right = screen_left + screen_size.width as i64;
+    let screen_bottom = screen_top + screen_size.height as i64;
+    let intersects_screen =
+        left < screen_right && right > screen_left && top < screen_bottom && bottom > screen_top;
+    if !intersects_screen {
+        return false;
+    }
+    let work_left = work_position.x as i64;
+    let work_top = work_position.y as i64;
+    let work_right = work_left + work_size.width as i64;
+    let work_bottom = work_top + work_size.height as i64;
+    left < work_left || top < work_top || right > work_right || bottom > work_bottom
+}
+
+#[cfg(windows)]
+fn overlaps_reserved_area(
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    monitor: &Monitor,
+) -> bool {
+    let work = monitor.work_area();
+    rect_overlaps_reserved_area(
+        position,
+        size,
+        *monitor.position(),
+        *monitor.size(),
+        work.position,
+        work.size,
+    )
+}
+
+#[cfg(windows)]
+fn refresh_taskbar_z_order(window: &WebviewWindow) -> Result<(), String> {
+    let position = window.outer_position().map_err(window_error)?;
+    let size = window.outer_size().map_err(window_error)?;
+    let center_x = position.x as f64 + size.width as f64 / 2.0;
+    let center_y = position.y as f64 + size.height as f64 / 2.0;
+    let Some(monitor) = window
+        .monitor_from_point(center_x, center_y)
+        .map_err(window_error)?
+        .or_else(|| window.current_monitor().ok().flatten())
+    else {
+        return Ok(());
+    };
+    if !overlaps_reserved_area(position, size, &monitor) {
+        return Ok(());
+    }
+    let hwnd = window.hwnd().map_err(window_error)?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        .map_err(|error| format!("failed to keep compact bubble above taskbar: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn refresh_taskbar_z_order(_window: &WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn start_taskbar_z_order_keeper(
+    window: WebviewWindow,
+    state: Arc<Mutex<BubbleState>>,
+    generation: u64,
+) {
+    thread::spawn(move || loop {
+        let keep_running = state
+            .lock()
+            .map(|state| state.collapsed && state.z_order_generation == generation)
+            .unwrap_or(false);
+        if !keep_running {
+            break;
+        }
+        let _ = refresh_taskbar_z_order(&window);
+        thread::sleep(Duration::from_millis(250));
+    });
+}
+
+#[cfg(not(windows))]
+fn start_taskbar_z_order_keeper(
+    _window: WebviewWindow,
+    _state: Arc<Mutex<BubbleState>>,
+    _generation: u64,
+) {
 }
 
 fn apply_collapsed_window(
@@ -259,7 +400,12 @@ pub fn collapse(
     })?;
     state.hover_rows = 0;
     state.hover_origin = None;
+    state.z_order_generation = state.z_order_generation.wrapping_add(1);
+    let generation = state.z_order_generation;
     state.collapsed = true;
+    drop(state);
+    refresh_taskbar_z_order(window)?;
+    start_taskbar_z_order_keeper(window.clone(), controller.state.clone(), generation);
     Ok(BubblePayload { collapsed: true })
 }
 
@@ -289,6 +435,7 @@ pub fn resize_collapsed(
         position.y as i64 + (old_size.height as i64 - new_size.height as i64) / 2,
     );
     apply_collapsed_window(window, target, new_size)?;
+    refresh_taskbar_z_order(window)?;
     settings.update_compact_position(WindowPosition {
         x: target.x,
         y: target.y,
@@ -338,6 +485,7 @@ pub fn set_hover_rows(
         bottom_anchored_position(&monitor, position, old_size, new_size)
     };
     apply_collapsed_window(window, target, new_size)?;
+    refresh_taskbar_z_order(window)?;
 
     let mut state = controller
         .state
@@ -359,8 +507,16 @@ pub fn move_to_cursor(
     settings: &SettingsStore,
     offset: BubbleDragOffset,
 ) -> Result<BubblePayload, String> {
-    if !is_collapsed(controller)? {
-        return current(controller);
+    {
+        let mut state = controller
+            .state
+            .lock()
+            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
+        if !state.collapsed {
+            return Ok(BubblePayload { collapsed: false });
+        }
+        state.hover_rows = 0;
+        state.hover_origin = None;
     }
     let cursor = window.cursor_position().map_err(window_error)?;
     let monitor = window
@@ -382,6 +538,7 @@ pub fn move_to_cursor(
     window.set_max_size(Some(size)).map_err(window_error)?;
     window.set_size(size).map_err(window_error)?;
     window.set_position(target).map_err(window_error)?;
+    refresh_taskbar_z_order(window)?;
     if offset.persist.unwrap_or(false) {
         settings.update_compact_position(WindowPosition {
             x: target.x,
@@ -440,6 +597,7 @@ pub fn expand(
     }
     state.hover_rows = 0;
     state.hover_origin = None;
+    state.z_order_generation = state.z_order_generation.wrapping_add(1);
     state.collapsed = false;
     Ok(BubblePayload { collapsed: false })
 }
@@ -477,12 +635,14 @@ mod tests {
     }
 
     #[test]
-    fn windows_policy_removes_compact_edge_gap() {
+    fn windows_policy_removes_compact_edge_gap_and_allows_reserved_area() {
         assert_eq!(CompactPositionPolicy::Windows.edge_margin(), 0);
+        assert!(CompactPositionPolicy::Windows.allows_reserved_area());
         assert_eq!(
             CompactPositionPolicy::Desktop.edge_margin(),
             DESKTOP_EDGE_MARGIN
         );
+        assert!(!CompactPositionPolicy::Desktop.allows_reserved_area());
     }
 
     #[cfg(windows)]
@@ -532,5 +692,35 @@ mod tests {
         );
 
         assert_eq!(target, PhysicalPosition::new(-1908, 1022));
+    }
+
+    #[test]
+    fn reserved_area_detection_covers_bottom_and_left_taskbars() {
+        let screen_position = PhysicalPosition::new(0, 0);
+        let screen_size = PhysicalSize::new(1920, 1080);
+        assert!(!rect_overlaps_reserved_area(
+            PhysicalPosition::new(100, 100),
+            PhysicalSize::new(276, 46),
+            screen_position,
+            screen_size,
+            PhysicalPosition::new(0, 0),
+            PhysicalSize::new(1920, 1040),
+        ));
+        assert!(rect_overlaps_reserved_area(
+            PhysicalPosition::new(100, 1034),
+            PhysicalSize::new(276, 46),
+            screen_position,
+            screen_size,
+            PhysicalPosition::new(0, 0),
+            PhysicalSize::new(1920, 1040),
+        ));
+        assert!(rect_overlaps_reserved_area(
+            PhysicalPosition::new(0, 100),
+            PhysicalSize::new(276, 46),
+            screen_position,
+            screen_size,
+            PhysicalPosition::new(48, 0),
+            PhysicalSize::new(1872, 1080),
+        ));
     }
 }

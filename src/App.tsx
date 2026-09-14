@@ -146,6 +146,7 @@ function App() {
   const bubbleHoverDesired = useRef(false);
   const bubbleHoverOpenTimer = useRef<number | undefined>(undefined);
   const bubbleHoverCloseTimer = useRef<number | undefined>(undefined);
+  const bubbleHoverSuppressUntilReentry = useRef(false);
   const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedStateEpoch = useRef(0);
@@ -446,6 +447,7 @@ function App() {
   };
 
   const beginBubbleHover = () => {
+    if (bubbleHoverSuppressUntilReentry.current || bubbleDrag.current) return;
     bubbleHoverDesired.current = true;
     if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
     if (bubbleHoverExpanded || apps.length === 0) return;
@@ -466,6 +468,7 @@ function App() {
 
   const endBubbleHover = () => {
     bubbleHoverDesired.current = false;
+    if (!bubbleDrag.current) bubbleHoverSuppressUntilReentry.current = false;
     if (bubbleHoverOpenTimer.current !== undefined) {
       window.clearTimeout(bubbleHoverOpenTimer.current);
       bubbleHoverOpenTimer.current = undefined;
@@ -481,11 +484,15 @@ function App() {
   };
 
   const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || bubbleHoverExpanded || (event.target as Element).closest("button, .bubble-app-list")) return;
+    if (event.button !== 0 || (event.target as Element).closest("button")) return;
     bubbleHoverDesired.current = false;
     if (bubbleHoverOpenTimer.current !== undefined) {
       window.clearTimeout(bubbleHoverOpenTimer.current);
       bubbleHoverOpenTimer.current = undefined;
+    }
+    if (bubbleHoverCloseTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverCloseTimer.current);
+      bubbleHoverCloseTimer.current = undefined;
     }
     const rect = event.currentTarget.getBoundingClientRect();
     bubbleDrag.current = {
@@ -504,8 +511,12 @@ function App() {
     const drag = bubbleDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (!drag.moved && Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
-    drag.moved = true;
-    event.currentTarget.classList.add("dragging");
+    if (!drag.moved) {
+      drag.moved = true;
+      bubbleHoverDesired.current = false;
+      setBubbleHoverExpanded(false);
+      event.currentTarget.classList.add("dragging");
+    }
     void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
       .then((state) => setBubbleMode(state.collapsed))
       .catch((bubbleError) => setError(messageOf(bubbleError)));
@@ -519,6 +530,7 @@ function App() {
     event.currentTarget.classList.remove("dragging");
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
     if (drag.moved) {
+      bubbleHoverSuppressUntilReentry.current = true;
       void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
         .then((state) => setBubbleMode(state.collapsed))
         .catch((bubbleError) => setError(messageOf(bubbleError)));
@@ -535,6 +547,7 @@ function App() {
     event.currentTarget.classList.remove("dragging");
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
     if (drag.moved) {
+      bubbleHoverSuppressUntilReentry.current = true;
       void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
         .then((state) => setBubbleMode(state.collapsed))
         .catch((bubbleError) => setError(messageOf(bubbleError)));
@@ -632,10 +645,6 @@ function App() {
         title={bubbleHoverExpanded ? undefined : "Drag to move · Hover for Apps · Click to open"}
         onMouseEnter={beginBubbleHover}
         onMouseLeave={endBubbleHover}
-        onPointerDown={beginBubbleDrag}
-        onPointerMove={moveBubbleDrag}
-        onPointerUp={finishBubbleDrag}
-        onPointerCancel={cancelBubbleDrag}
       >
         {bubbleHoverExpanded && (
           <div className="bubble-app-list" aria-label="Registered Apps">
@@ -650,7 +659,13 @@ function App() {
             })}
           </div>
         )}
-        <div className="bubble-bar">
+        <div
+          className="bubble-bar"
+          onPointerDown={beginBubbleDrag}
+          onPointerMove={moveBubbleDrag}
+          onPointerUp={finishBubbleDrag}
+          onPointerCancel={cancelBubbleDrag}
+        >
           <div className="bubble-grip" aria-hidden="true">
             <img src="/port-lens.svg" alt="" />
           </div>
