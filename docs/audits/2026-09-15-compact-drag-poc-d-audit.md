@@ -124,3 +124,11 @@ The material movement primitive differs:
 - current Token Lens: Tauri `WebviewWindow::set_position()`
 
 Select **D0.1** as the next single-variable control. Keep pointer capture, 4 px threshold, grab-ratio-only invoke, backend current-cursor resampling, separate hover HWND, and all lifecycle logic unchanged; replace only the Windows drag-time movement call with `window.set_position(target)`. This does not use caption hit-testing or the Windows move/size modal loop.
+
+## D0.1 build evidence
+
+Implementation SHA: `850d728bda02e975106db0c51d6913274b7a06af` (`poc: route compact drag through tauri position`).
+
+Local gates: frontend build PASS, rustfmt PASS, clippy `-D warnings` PASS, Rust tests 36/36 PASS, diff-check PASS.
+
+Windows Bundle `35037312466`: SUCCESS. Artifacts: portable `10423698454`, MSI `10423942712`, NSIS `10423539252`. Windows runtime/manual validation remains pending; this bundle must be judged primarily on whether the jump/catch-up class disappears relative to D0 `f474b0d` / Bundle `34946164626`.
