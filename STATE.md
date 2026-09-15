@@ -83,8 +83,8 @@ A separate lifecycle bug was found while repeatedly testing compact → `Open`: 
 ## Next action
 
 1. Keep PR #4 open and unmerged; production drag behavior remains unresolved.
-2. PoC-C deep audit is complete. The selected control is the Winit 0.30.10-compatible zero-lParam modal wake-up documented in `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`.
-3. Implement PoC-C only on a new isolated branch/worktree derived from the proven native-grip/B1.2 baseline: keep the queued `WM_NCLBUTTONDOWN/HTCAPTION` handoff and add an immediately queued `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`. Change no other drag/lifecycle variable.
+2. PoC-C is implemented on isolated branch/worktree `poc/compact-winit-wakeup` / `/Users/sunjaekim/Developer/port-lens-poc-c`. Commit `ee2533a` adds only the Winit 0.30.10-compatible `WM_MOUSEMOVE(WPARAM(0), LPARAM(0))` wake-up after the B1.2 queued, correctly packed `WM_NCLBUTTONDOWN/HTCAPTION` handoff.
+3. Local validation PASS: frontend build, fmt, clippy `-D warnings`, 36/36 Rust tests, and diff check. Windows Bundle `34941498309` for full commit `ee2533a54347b2ed883bcbdd573dc1579d901571` is SUCCESS; portable/MSI/NSIS artifacts uploaded. Windows manual drag validation is pending.
 4. Manual decision gate: full PASS → design integration/lifecycle, but do **not** restore production `data-tauri-drag-region` unchanged because Tao `handle_os_dragging()` still has a separate `WM_NCLBUTTONDOWN` coordinate-packing defect; partial PASS (initial pause fixed, residual stutter only) → isolate Port Lens `Moved` callback work; unchanged FAIL → permanently close caption/modal-loop work and evaluate native captured-pointer positioning as the fallback.
 5. Preserve the validated size-drift fix, hover-window architecture, Open deadlock fix, taskbar behavior, mixed-DPI/multi-monitor handling, startup gating, and PR #3 runtime lifecycle protections. Integrate nothing into PR #4 until a candidate passes Windows manual validation.
 

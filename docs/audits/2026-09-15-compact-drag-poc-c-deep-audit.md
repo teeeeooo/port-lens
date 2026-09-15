@@ -143,6 +143,14 @@ A PoC-C PASS would validate the missing modal wake-up, but it would **not** make
 
 Do not change hover recovery, persistence semantics, z-order logic, DPI logic, grip geometry, application `Moved` callbacks, or dependency versions in this control. Do not add a timing delay. The experiment must answer one question: does reproducing Winit 0.30.10's modal wake-up remove the dead period?
 
+## PoC-C implementation evidence
+
+The selected control is now implemented in the isolated worktree `/Users/sunjaekim/Developer/port-lens-poc-c` on branch `poc/compact-winit-wakeup`. Commit `ee2533a54347b2ed883bcbdd573dc1579d901571` (`poc: add winit-style compact drag wakeup`) is based directly on B1.2 `e20e751`.
+
+The implementation changes only `src-tauri/src/native_drag.rs`: after posting the correctly packed original screen-point `WM_NCLBUTTONDOWN/HTCAPTION`, the native grip immediately posts `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`. No delay, dependency, hover recovery, persistence, z-order, DPI, or drag-end lifecycle variable is changed.
+
+Local validation is PASS: frontend build, Rust format, clippy with warnings denied, 36/36 Rust tests, and `git diff --check`. Windows Bundle run `34941498309` completed successfully for the exact commit above; Windows package build, portable preparation, and NSIS/MSI/portable artifact uploads all passed. Artifact IDs are portable `10386245220`, MSI `10385409169`, and NSIS `10385402661`. Runtime acceptance remains pending manual Windows validation.
+
 ## PoC-C immediate manual gate
 
 Primary gate:

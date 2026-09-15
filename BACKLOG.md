@@ -44,7 +44,7 @@ Root cause and fix:
 
 ## 4. PoC-C Winit compatibility control
 
-Status: **AUDIT COMPLETE / CONTROL SELECTED**.
+Status: **IMPLEMENTED / WINDOWS BUILD PASS / MANUAL PENDING**.
 
 Deep audit: `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`.
 
@@ -54,6 +54,13 @@ Selected control:
 - B1.2 did not test this fix because its parent `WM_NCLBUTTONDOWN` still passed through Tao's old synthetic-mousemove handler
 - PoC-C should reuse the isolated native-grip/B1.2 path and add only an immediately queued `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`; no delays, dependency upgrade, hover-lifecycle change, or persistence change in the same control
 - a PoC-C PASS does **not** authorize restoring production `data-tauri-drag-region` unchanged: Tao `handle_os_dragging()` still has a separate malformed `WM_NCLBUTTONDOWN` coordinate encoding path, so production integration must retain a validated native initiation path or separately validate a Tao coordinate-packing correction
+
+Implementation evidence:
+- isolated branch/worktree: `poc/compact-winit-wakeup` / `/Users/sunjaekim/Developer/port-lens-poc-c`
+- commit `ee2533a` changes only `src-tauri/src/native_drag.rs` and adds the zero-lParam synthetic `WM_MOUSEMOVE` immediately after the existing correctly packed queued caption handoff
+- local gates: frontend build PASS, fmt PASS, clippy PASS, Rust tests 36/36 PASS, diff check PASS
+- Windows Bundle `34941498309` / full SHA `ee2533a54347b2ed883bcbdd573dc1579d901571`: SUCCESS; portable/MSI/NSIS upload PASS
+- manual Windows drag gate: pending
 
 Immediate Windows gate:
 - movement begins on the first slow cursor movement
