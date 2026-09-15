@@ -52,20 +52,22 @@ WRY `0.55.1` already enables WebView2 non-client-region support through `ICoreWe
 
 PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser args as the primary cause. The drag-after-hover failure is also consistent with `prepareNativeBubbleDrag()` setting `bubbleHoverSuppressUntilReentry=true` while WebView2 non-client drag does not reliably deliver the DOM `mouseleave` path that clears it. Do not spend more time patching this failed substrate.
 
-## PoC-B current state
+## PoC-B manual result
 
 - isolated branch/worktree: `poc/compact-native-drag-surface` / `/Users/sunjaekim/Developer/port-lens-poc-b`
-- B1 commit `3d9b12e`: Port Lens-owned 34 px native child HWND grip; no WRY/WebView2 child subclassing
-- Windows Bundle `34921608950`: build PASS, but manual compact entry FAIL because `CreateWindowExW` returned NULL
-- B1.1 commit `d7da866`: manifest-only control adding Windows 8/8.1/10+ compatibility while preserving Common Controls v6
-- Windows Bundle `34924195134`: build/package/artifact upload PASS
-- B1.1 manual result: compact entry PASS from both in-app Minimize and native title-bar minimize; post-drag hover reopen PASS
-- B1.1 drag result: **FAIL**; native grip still has visible pause/jump and residual drag stutter
-- hover-list drag-start hide cannot be evaluated in B1 because hover and native grip are intentionally separate hit regions
-- validated size-drift fix synchronized into PoC-B as `c4a821c` so compact/Open testing no longer carries the known width-growth regression
-- B1.2 commit `e20e751`: child `WM_LBUTTONDOWN` now queues `WM_NCLBUTTONDOWN/HTCAPTION` with `PostMessageW` instead of synchronously nesting the parent move loop with `SendMessageW`
-- B1.2 deliberately does not emit `native-compact-drag-ended` immediately because queued delivery has no valid drag-end point yet; hover end lifecycle is deferred until the drag substrate itself passes
-- Windows Bundle `34931769814`: build/package/artifact upload **PASS**; Windows manual drag validation pending
+- B1 `3d9b12e` / Bundle `34921608950`: build PASS, compact entry FAIL because layered child HWND creation failed without a compatibility manifest
+- B1.1 `d7da866` / Bundle `34924195134`: manifest control fixed compact entry, but native grip drag still paused/jumped and stuttered
+- validated size-drift fix synchronized into PoC-B as `c4a821c`
+- B1.2 `e20e751` / Bundle `34931769814`: replaced blocking `SendMessageW` with queued `PostMessageW` while keeping the native grip/caption-drag architecture otherwise fixed
+- B1.2 manual result: **FAIL**
+  - movement is not immediate after mouse-down
+  - pause → jump remains
+  - cursor/window offset appears
+  - catch-up jump remains during/release-side movement
+  - residual drag stutter remains
+  - `Open` after drag remains PASS
+
+PoC-B is therefore **CLOSED / FAILED**. The B1.2 control rules out synchronous child-WndProc re-entry as the primary cause. Do not continue tuning `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, `SendMessageW`/`PostMessageW`, or the Windows move/size modal-loop path for this compact drag problem.
 
 ## Expanded-window size drift
 
@@ -79,10 +81,10 @@ A separate lifecycle bug was found while repeatedly testing compact → `Open`: 
 
 ## Next action
 
-1. Keep PR #4 open and unmerged.
-2. Manually validate B1.2 Bundle `34931769814`, focusing first on immediate native-grip drag, pause/jump, cursor offset, and residual stutter.
-3. If B1.2 drag remains defective, close PoC-B; do not keep tuning Windows caption/modal-loop drag.
-4. If B1.2 drag passes, add a separate lifecycle follow-up for a real drag-end signal before judging hover-hide/recovery behavior.
-5. Only after the complete drag/lifecycle path passes Windows manual validation should it be integrated into PR #4.
+1. Keep PR #4 open and unmerged; production drag behavior remains unresolved.
+2. Treat both PoC-A (WebView2 non-client drag regions) and PoC-B (native grip → Windows caption/modal-loop drag) as closed failed substrates.
+3. Before any new drag implementation, perform a fresh PoC-C audit of approaches that **do not use the Windows caption/move modal loop** and do not reintroduce WRY child HWND subclassing or per-frame `SetWindowPos`.
+4. Preserve the validated size-drift fix, hover-window architecture, Open deadlock fix, taskbar behavior, mixed-DPI/multi-monitor handling, startup gating, and PR #3 runtime lifecycle protections.
+5. Integrate nothing into PR #4 until a new substrate passes Windows manual validation.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.

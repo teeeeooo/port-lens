@@ -151,9 +151,19 @@ Code audit after this result shows no obvious Port Lens per-move work on the cri
 
 B1.2 tests that hypothesis directly. The already-validated expanded-size fix is synchronized into the PoC as baseline commit `c4a821c`; B1.2 itself is isolated in `e20e751`. It changes the child grip handoff to `PostMessageW(parent, WM_NCLBUTTONDOWN, HTCAPTION, original_mouse_down_screen_point)`, so the child WndProc returns immediately instead of synchronously nesting the parent's move/size modal loop. Because queued delivery no longer has a meaningful return point for drag completion, B1.2 removes the immediate `native-compact-drag-ended` emit rather than falsely treating message enqueue as drag end. Windows Bundle `34931769814` built and uploaded NSIS/MSI/portable artifacts successfully.
 
-B1.2 manual gate is intentionally narrow: first determine whether native-grip movement is immediate and whether pause/jump, cursor offset, and residual catch-up stutter disappear. If this fails, close PoC-B. If it passes, add a separate real drag-end lifecycle signal before judging hover-hide/recovery or integrating into PR #4.
+B1.2 manual Windows result: **FAIL**.
+- movement is still not immediate after mouse-down
+- the same pause → jump behavior remains
+- cursor/window offset appears during drag
+- catch-up jump remains during/release-side movement
+- residual micro-stutter remains under repeated slow/fast drag
+- compact `Open` after drag remains responsive and expands normally
 
-Hover policy for either PoC: visible hover list should hide at drag start; do not attempt to make the separate hover HWND continuously follow the compact bar during drag.
+This closes PoC-B as **FAILED**. Replacing `SendMessageW` with queued `PostMessageW` did not improve the drag defect, so synchronous child-WndProc re-entry is not the primary cause. The remaining failure belongs to the native-grip → Windows caption/move modal-loop substrate in this product context. Do not continue testing `SC_MOVE`, further `WM_NCLBUTTONDOWN` timing variants, or drag-end lifecycle work on this failed substrate.
+
+Combined PoC-A/B conclusion: both WebView2 non-client draggable regions and Port Lens-owned native-grip caption dragging still exhibit the pause/jump class of failure. Any PoC-C must avoid the Windows caption/move modal loop entirely while also preserving the existing bans on WRY/WebView2 child HWND subclassing and per-frame `SetWindowPos`.
+
+Hover policy for any future substrate remains: visible hover list should hide at drag start; do not make the separate hover HWND continuously follow the compact bar during drag.
 
 ## Separate finding: expanded-window size drift
 
@@ -200,4 +210,4 @@ The size-drift issue is therefore closed and B1.2 may proceed independently on t
 
 ## Handoff rule
 
-The next session must first verify the actual git/PR state and read `STATE.md`, `BACKLOG.md`, and this audit. PoC-A is closed as failed. Continue with PoC-B on an isolated branch/worktree without changing PR #4 production code until the Windows manual gate passes.
+The next session must first verify the actual git/PR state and read `STATE.md`, `BACKLOG.md`, and this audit. PoC-A and PoC-B are both closed as failed. Do not resume WebView2 `app-region` work or Windows caption/modal-loop drag tuning. The next technical step is an audit-only PoC-C design pass constrained to a materially different drag substrate; do not modify PR #4 production drag code until that audit selects a candidate and the candidate later passes Windows manual validation.
