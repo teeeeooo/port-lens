@@ -6,16 +6,16 @@ Only current actionable/deferred work is kept here. Completed implementation his
 
 ## 1. Compact drag substrate PoC-A
 
-Status: NEXT. Do not modify PR #4 production drag path first.
+Status: CONTROL VALIDATION. Production path remains untouched.
 
-Goal: determine whether WebView2 native draggable regions remove the Windows late-capture/fixed-offset failure seen with Tauri `data-tauri-drag-region`.
+PoC-A1 `46409e2` / Windows Bundle `34915796285` built successfully but failed manual acceptance: hover micro-stutter, hover list usually absent, and drag still pauses then jumps. The old persistent cursor/window offset was removed, so the substrate changed behavior but is not acceptable.
 
-Work:
-- create an isolated branch/worktree from the current PR #4 baseline
-- test `msWebView2EnableDraggableRegions`
-- use CSS `app-region: drag` for compact body and `app-region: nodrag` for `Open`
-- keep both `main` and `compact-hover` WebViews present during the test
-- account for Tauri `additionalBrowserArgs` / data-directory constraints
+Current work:
+- control commit `ac954cd` removes only redundant `additionalBrowserArgs`
+- keep CSS `app-region: drag` for compact body and `app-region: nodrag` for `Open`
+- rely on WRY 0.55.1 native `ICoreWebView2Settings9` non-client-region enablement
+- validate Windows Bundle run `34917910453`
+- if pause/jump remains, stop PoC-A and move to PoC-B
 
 Acceptance gate:
 - immediate movement after mouse-down
@@ -27,7 +27,7 @@ Acceptance gate:
 
 ## 2. Compact drag substrate PoC-B
 
-Status: BLOCKED on PoC-A failure.
+Status: BLOCKED pending the single PoC-A control result.
 
 If WebView2 draggable regions are not viable, test an independent Win32 drag surface/hit-test layer owned by Port Lens.
 

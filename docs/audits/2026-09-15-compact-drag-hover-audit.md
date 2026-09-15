@@ -109,6 +109,21 @@ PoC-A acceptance:
 - hover-list presence cannot block drag start
 - no multi-WebView startup freeze/deadlock
 
+## PoC-A1 manual result
+
+PoC branch/worktree: `poc/compact-webview2-drag-regions` / `/Users/sunjaekim/Developer/port-lens-poc-a`. PoC-A1 commit `46409e2` replaced `data-tauri-drag-region` with WebView2 `app-region: drag/nodrag` and used the `msWebView2EnableDraggableRegions` browser flag. Windows Bundle run `34915796285` built successfully.
+
+Manual Windows result: FAIL overall.
+- compact hover causes a brief freeze / micro-stutter
+- the separate hover list usually fails to open and appears only intermittently
+- drag still pauses before the window jumps/catches up
+- the previous persistent cursor/window offset after late snap is no longer reproduced
+- if the hover list is visible when drag starts, the separate hover HWND stays at its old position while the compact bar moves; it disappears after mouse release
+
+The release-time hide is explained by current `window_state::schedule_persist()`: while the left button is down it defers compact persistence; after release it hides the hover panel and persists the compact position. This does not satisfy the desired drag-start hide policy.
+
+A source audit found that pinned WRY `0.55.1` already calls `ICoreWebView2Settings9::SetIsNonClientRegionSupportEnabled(true)` on Windows. Therefore the browser feature flag is redundant in this stack. Before closing PoC-A, run one control that removes only `additionalBrowserArgs` while keeping the same CSS drag regions. Control commit: `ac954cd`; Windows Bundle run: `34917910453`. If pause/jump persists, treat PoC-A as failed and proceed to PoC-B without further timing patches.
+
 PoC-B — independent native drag surface, only if PoC-A fails:
 - do not subclass or consume mouse messages from the WRY/WebView2 child HWND
 - keep the `Open` interactive area outside the native drag surface
