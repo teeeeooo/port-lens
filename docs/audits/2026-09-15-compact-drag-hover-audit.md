@@ -165,10 +165,12 @@ The persisted expanded-window path had the same defect: `window_state::capture_e
 
 PR #4 fixes both paths by defining width/height as inner/client dimensions. `ExpandedWindow.size` is renamed to `inner_size`; transient compact restore captures `inner_size()`, and persisted `expandedBounds` now captures `inner_size()` as logical dimensions. Existing preview settings are backward-compatible through `expandedBoundsAreInner`: missing/false means legacy outer-size semantics, so startup subtracts the currently measured non-client frame once and rewrites the actual post-fit inner bounds with the marker set true.
 
-Regression gate before resuming B1.2:
-- compact → `Open` at least 10 consecutive cycles with stable main-window width and height
-- close/relaunch once in expanded mode and confirm no one-time size growth
-- verify ordinary manual resize still persists across restart
+Regression gate result before resuming B1.2: **PASS** on PR #4 commit `918b377` / Windows Bundle `34929848061`.
+- repeated compact → `Open` cycles remained stable with no cumulative width/height growth
+- expanded close/relaunch restore remained stable
+- ordinary manual resize persisted correctly across restart
+
+The size-drift issue is therefore closed and B1.2 may proceed independently on the isolated PoC-B branch.
 
 ## Do-not-regress constraints
 

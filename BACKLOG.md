@@ -40,22 +40,18 @@ Acceptance gate:
 
 ## 3. Expanded main-window size drift
 
-Status: **IMPLEMENTED / WINDOWS MANUAL VALIDATION PENDING**.
+Status: **CLOSED / WINDOWS MANUAL PASS**.
 
 Root cause and fix:
 - compact collapse and persisted window-state capture used `outer_size()`
 - both restore paths used `set_size()`, which restores the inner/client size and therefore added the Windows frame again on every cycle
-- PR #4 now stores inner/client size for both transient compact restore state and persisted `expandedBounds`
+- PR #4 commit `918b377` stores inner/client size for both transient compact restore state and persisted `expandedBounds`
 - legacy outer-size `expandedBounds` are converted once and rewritten with `expandedBoundsAreInner=true`
-
-Manual gate:
-- compact → `Open` ×10 with no cumulative width/height growth
-- exit/relaunch with expanded main UI and confirm the restored size remains stable
-- then resume PoC-B1.2; do not mix drag-substrate changes into this validation
+- Bundle `34929848061` manual validation passed: repeated compact → `Open`, restart restore, and manual-resize restore stayed stable
 
 ## 4. PR #4 integration and manual gate
 
-Status: BLOCKED on the size-drift manual gate and a passing drag-substrate PoC.
+Status: BLOCKED on a passing drag-substrate PoC.
 
 After the size gate and one drag PoC pass:
 - integrate only the validated drag mechanism into `feature/compact-app-hover`

@@ -71,13 +71,13 @@ A separate lifecycle bug was found while repeatedly testing compact → `Open`: 
 - persisted `expandedBounds` had the same mismatch: `outer_size()` was stored and later restored through `set_size()`
 - production fix on PR #4 standardizes both transient and persisted expanded dimensions on inner/client size
 - legacy preview settings are marked with `expandedBoundsAreInner`; old settings without the marker are converted once by subtracting the current non-client frame and then rewritten using inner-size semantics
-- Windows manual gate: repeat compact → `Open` at least 10 times and confirm width/height remain stable; then restart the app and confirm expanded size is preserved without one-time growth
+- Windows manual gate: **PASS** on commit `918b377` / Bundle `34929848061`; compact → `Open` repetition, restart restore, and manual-resize restore were reported stable
 
 ## Next action
 
 1. Keep PR #4 open and unmerged.
-2. Finish Windows manual validation of the expanded-window size fix before resuming drag substrate work.
-3. After the size gate passes, return to the isolated PoC-B branch for one final B1.2 control that queues the parent caption-drag handoff instead of using blocking `SendMessageW`.
+2. Return to isolated PoC-B and synchronize the already-validated size-drift fix as a separate baseline commit.
+3. Run one final B1.2 control that queues the parent caption-drag handoff instead of using blocking `SendMessageW`; keep this drag change isolated from the size fix.
 4. If pause/jump remains in B1.2, close PoC-B; do not keep tuning Windows caption/modal-loop drag.
 5. Only after a drag substrate passes Windows manual validation should it be integrated into PR #4.
 
