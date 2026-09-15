@@ -14,6 +14,7 @@ Last updated: 2026-09-15
 Detailed compact drag/hover evidence and references:
 - `docs/audits/2026-09-15-compact-drag-hover-audit.md`
 - `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`
+- `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`
 
 ## Windows manual state
 
@@ -80,12 +81,18 @@ A separate lifecycle bug was found while repeatedly testing compact → `Open`: 
 - legacy preview settings are marked with `expandedBoundsAreInner`; old settings without the marker are converted once by subtracting the current non-client frame and then rewritten using inner-size semantics
 - Windows manual gate: **PASS** on commit `918b377` / Bundle `34929848061`; compact → `Open` repetition, restart restore, and manual-resize restore were reported stable
 
+## Historical drag audit correction
+
+Git history shows that Port Lens already used a Token-Lens-like drag path in `78c006c` through `cca33ce`: DOM pointer capture, a 4 px threshold, repeated lightweight move invokes, backend `cursor_position()` resampling, grab-ratio preservation, and Windows position-only `SetWindowPos`. The final `cca33ce` form built successfully as Windows Bundle `34802709558`, but repository evidence does not preserve a Windows manual FAIL for that form; its docs still described manual validation as pending.
+
+`7144042` removed that path while simultaneously splitting hover into the current dedicated `compact-hover` window. The recorded rationale was to remove repeated pointermove IPC/cursor polling/manual movement in favor of OS-owned native drag, not a documented runtime failure of `cca33ce`. The 2026-09-15 reference audit later explicitly examined Token Lens but excluded its approach based on predicted IPC/backlog risk. That exclusion was too categorical: backend current-cursor resampling materially limits stale-coordinate replay, and the present fixed-main-window + separate-hover architecture has never been tested with the modern Token Lens pattern.
+
 ## Next action
 
 1. Keep PR #4 open and unmerged; production drag behavior remains unresolved.
-2. PoC-C is **CLOSED / FAILED**. Isolated branch/worktree: `poc/compact-winit-wakeup` / `/Users/sunjaekim/Developer/port-lens-poc-c`; commit `ee2533a` added only the Winit 0.30.10-compatible `WM_MOUSEMOVE(WPARAM(0), LPARAM(0))` wake-up after the B1.2 queued, correctly packed `WM_NCLBUTTONDOWN/HTCAPTION` handoff.
-3. Build validation PASS: frontend build, fmt, clippy `-D warnings`, 36/36 Rust tests, diff check, and Windows Bundle `34941498309` for full commit `ee2533a54347b2ed883bcbdd573dc1579d901571`. Windows manual result: first movement still not immediate; pause → jump remains; cursor offset and catch-up jump both became worse; micro-stutter remains; `Open` remains PASS.
-4. Caption/modal-loop drag is now permanently closed for this issue: no further `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, Send/Post timing, zero-lParam wake-up, or `data-tauri-drag-region` tuning. The next candidate is native captured-pointer positioning (`SetCapture` + same-thread event-driven `SetWindowPos`) and must be audited before implementation.
+2. PoC-C is **CLOSED / FAILED**. Build validation passed, but Windows manual validation on `ee2533a` / Bundle `34941498309` still showed delayed first movement, pause → jump, worse cursor offset/catch-up jump, and micro-stutter; `Open` remained normal.
+3. Caption/modal-loop drag is permanently closed for this issue: no further `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, Send/Post timing, zero-lParam wake-up, or `data-tauri-drag-region` tuning.
+4. Before implementing PoC-D, audit two non-caption controls against the current architecture: **D0** = exact Token Lens-style pointer capture → repeated lightweight invoke → backend current-cursor resampling → position-only movement; **D1** = Port Lens-owned native `SetCapture` → same-thread `WM_MOUSEMOVE` → position-only `SetWindowPos`. Do not reject D0 solely because it uses repeated IPC; measure it.
 5. Preserve the validated size-drift fix, hover-window architecture, Open deadlock fix, taskbar behavior, mixed-DPI/multi-monitor handling, startup gating, and PR #3 runtime lifecycle protections. Integrate nothing into PR #4 until a candidate passes Windows manual validation.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.

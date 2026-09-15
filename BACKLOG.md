@@ -67,18 +67,17 @@ Conclusion:
 - permanently close `WM_NCLBUTTONDOWN` / `HTCAPTION` / `SC_MOVE` / Send-vs-Post / zero-lParam wake-up / `data-tauri-drag-region` tuning for this issue
 - preserve PoC-C branch/worktree as evidence; do not integrate its code into PR #4
 
-## 5. Native captured-pointer positioning audit
+## 5. PoC-D non-caption drag audit
 
 Status: **NEXT / AUDIT FIRST**.
 
-Candidate boundary:
-- Port Lens-owned native grip only
-- `WM_LBUTTONDOWN`: `SetCapture`, snapshot cursor screen point and parent window rect/grab offset
-- `WM_MOUSEMOVE`: same-thread native `SetWindowPos` only when target position changes
-- `WM_LBUTTONUP` / `WM_CAPTURECHANGED`: terminate drag, persist/clamp once, restore hover eligibility
-- no JS pointer loop, no Tauri command IPC, no `WM_NCLBUTTONDOWN`, no `HTCAPTION`, no Windows move-size modal loop
+History correction: `78c006c` → `cca33ce` already implemented the core Token Lens pattern in Port Lens: pointer capture, 4 px threshold, grab-ratio-only IPC, backend current-cursor resampling, and manual positioning. `cca33ce` Windows Bundle `34802709558` built successfully, while repository docs still showed Windows manual validation pending; no preserved manual FAIL for that final form was found. `7144042` removed it during the separate-hover refactor based on expected IPC/manual-movement risk rather than recorded Windows failure. See `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`.
 
-Before implementation, audit message ordering, capture loss, multi-monitor/mixed-DPI coordinate semantics, topmost/taskbar behavior, WebView2 parent notifications, and whether app `Moved` callbacks must be suppressed during the native drag.
+Audit two candidates before implementation:
+- **D0 — Token Lens exact-style control:** current fixed 276×46 main HWND + separate `compact-hover`; DOM pointer capture and 4 px threshold; repeated lightweight move invoke carries only grab ratio; backend samples current cursor at execution time; Windows movement is position-only; drag-time persistence/z-order work is suppressed.
+- **D1 — native captured-pointer control:** Port Lens-owned native grip; `WM_LBUTTONDOWN` → `SetCapture` and snapshot cursor/parent rect; same-thread `WM_MOUSEMOVE` → position-only `SetWindowPos`; `WM_LBUTTONUP` / `WM_CAPTURECHANGED` terminates and persists/clamps once.
+
+Both avoid `WM_NCLBUTTONDOWN`, `HTCAPTION`, and the Windows move-size modal loop. D0 must not be rejected solely because it uses repeated IPC; current-cursor resampling means it does not simply replay stale frontend coordinates. Compare expected queueing, capture-loss behavior, mixed-DPI/cross-monitor math, topmost/taskbar interaction, WebView2 position notifications, Port Lens `Moved` callbacks, and drag-end persistence before selecting the first PoC-D control.
 
 ## 6. PR #4 integration and manual gate
 
