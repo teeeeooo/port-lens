@@ -102,3 +102,25 @@ Local validation after implementation:
 - `git diff --check`: PASS
 
 Windows package/runtime validation remains pending. A package PASS will prove compilation only; the drag substrate remains unproven until the manual gate above passes.
+
+## Windows manual result — D0 (`f474b0d`, Bundle `34946164626`)
+
+User validation on Windows:
+- first movement: slightly delayed, but acceptable and similar to Token Lens
+- pause → jump: **FAIL / still present**
+- persistent cursor/window offset: **PASS / absent**
+- catch-up jump: **FAIL / still present**
+- micro-stutter: present but acceptable and similar to Token Lens
+- hover-visible drag → hide: **PASS**
+- `Open`: **PASS**
+
+Interpretation: D0 substantially improves the old offset behavior and preserves hover/Open, but it does not pass the primary drag gate because jump/catch-up remains. For subsequent validation, `pause → jump` means the initial post-threshold stall followed by a large first move; `catch-up jump` means the same lag/catch-up pattern occurring during an already-active drag. They may share one queueing/movement cause and can be treated as one jump-class symptom unless they diverge under A/B testing.
+## D0.1 isolation decision
+
+A direct comparison against current Token Lens found that both applications use the same desktop stack: Tauri 2.11.5, tauri-runtime-wry 2.11.4, Tao 0.35.3, and WRY 0.55.1. Token Lens also receives `WindowEvent::Moved` and schedules persistence during drag, so Port Lens `schedule_persist()` is not a strong first differentiator.
+
+The material movement primitive differs:
+- Port Lens D0 and historical `cca33ce`: Windows raw position-only `SetWindowPos`
+- current Token Lens: Tauri `WebviewWindow::set_position()`
+
+Select **D0.1** as the next single-variable control. Keep pointer capture, 4 px threshold, grab-ratio-only invoke, backend current-cursor resampling, separate hover HWND, and all lifecycle logic unchanged; replace only the Windows drag-time movement call with `window.set_position(target)`. This does not use caption hit-testing or the Windows move/size modal loop.
