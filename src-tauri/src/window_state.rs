@@ -1,5 +1,5 @@
 use crate::bubble::BubbleController;
-use crate::settings::{AppSettings, SettingsStore, WindowBounds};
+use crate::settings::{SettingsStore, WindowBounds};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{LogicalSize, Manager, Monitor, PhysicalPosition, WebviewWindow};
@@ -18,11 +18,41 @@ fn window_error(error: tauri::Error) -> String {
     format!("window state operation failed: {error}")
 }
 
-pub fn restore_initial(window: &WebviewWindow, settings: &AppSettings) -> Result<(), String> {
+fn outer_bounds_to_inner(
+    mut bounds: WindowBounds,
+    frame_width: f64,
+    frame_height: f64,
+) -> WindowBounds {
+    bounds.width = (bounds.width - frame_width).max(MIN_WIDTH);
+    bounds.height = (bounds.height - frame_height).max(MIN_HEIGHT);
+    bounds
+}
+
+fn legacy_outer_bounds_to_inner(
+    window: &WebviewWindow,
+    bounds: WindowBounds,
+) -> Result<WindowBounds, String> {
+    let scale = window.scale_factor().map_err(window_error)?;
+    let outer = window.outer_size().map_err(window_error)?;
+    let inner = window.inner_size().map_err(window_error)?;
+    let frame_width = outer.width.saturating_sub(inner.width) as f64 / scale;
+    let frame_height = outer.height.saturating_sub(inner.height) as f64 / scale;
+    Ok(outer_bounds_to_inner(bounds, frame_width, frame_height))
+}
+
+pub fn restore_initial(window: &WebviewWindow, settings: &SettingsStore) -> Result<(), String> {
     window
         .set_min_size(Some(LogicalSize::new(MIN_WIDTH, MIN_HEIGHT)))
         .map_err(window_error)?;
-    if let Some(bounds) = settings.expanded_bounds {
+    let current_settings = settings.get()?;
+    let mut migrate_legacy_bounds = false;
+    if let Some(saved_bounds) = current_settings.expanded_bounds {
+        let bounds = if current_settings.expanded_bounds_are_inner {
+            saved_bounds
+        } else {
+            migrate_legacy_bounds = true;
+            legacy_outer_bounds_to_inner(window, saved_bounds)?
+        };
         window
             .set_size(LogicalSize::new(bounds.width, bounds.height))
             .map_err(window_error)?;
@@ -32,7 +62,13 @@ pub fn restore_initial(window: &WebviewWindow, settings: &AppSettings) -> Result
                 .map_err(window_error)?;
         }
     }
-    fit_to_current_work_area(window)
+    fit_to_current_work_area(window)?;
+    if migrate_legacy_bounds {
+        if let Some(bounds) = capture_expanded_bounds(window)? {
+            settings.update_expanded_bounds(bounds)?;
+        }
+    }
+    Ok(())
 }
 
 fn fit_to_current_work_area(window: &WebviewWindow) -> Result<(), String> {
@@ -146,7 +182,7 @@ fn capture_expanded_bounds(window: &WebviewWindow) -> Result<Option<WindowBounds
     }
     let scale = window.scale_factor().map_err(window_error)?;
     let position = window.outer_position().map_err(window_error)?;
-    let size = window.outer_size().map_err(window_error)?;
+    let size = window.inner_size().map_err(window_error)?;
     let logical = size.to_logical::<f64>(scale);
     if logical.width < MIN_WIDTH || logical.height < MIN_HEIGHT {
         return Ok(None);
@@ -197,5 +233,23 @@ mod tests {
         assert!(rects_intersect((10, 10, 100, 100), (0, 0, 50, 50)));
         assert!(!rects_intersect((50, 0, 100, 100), (0, 0, 50, 50)));
         assert!(!rects_intersect((-100, -100, 20, 20), (0, 0, 50, 50)));
+    }
+
+    #[test]
+    fn legacy_outer_bounds_are_converted_to_inner_size_once() {
+        let migrated = outer_bounds_to_inner(
+            WindowBounds {
+                x: 100,
+                y: 200,
+                width: 1200.0,
+                height: 800.0,
+            },
+            16.0,
+            39.0,
+        );
+        assert_eq!(migrated.width, 1184.0);
+        assert_eq!(migrated.height, 761.0);
+        assert_eq!(migrated.x, 100);
+        assert_eq!(migrated.y, 200);
     }
 }

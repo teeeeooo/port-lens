@@ -78,7 +78,7 @@ fn hover_panel_physical_size(
 #[derive(Debug, Clone, Copy)]
 struct ExpandedWindow {
     position: PhysicalPosition<i32>,
-    size: PhysicalSize<u32>,
+    inner_size: PhysicalSize<u32>,
     maximized: bool,
     always_on_top: bool,
 }
@@ -555,12 +555,13 @@ pub fn collapse(
     }
 
     let position = window.outer_position().map_err(window_error)?;
-    let size = window.outer_size().map_err(window_error)?;
+    let outer_size = window.outer_size().map_err(window_error)?;
+    let inner_size = window.inner_size().map_err(window_error)?;
     let maximized = window.is_maximized().map_err(window_error)?;
     let always_on_top = window.is_always_on_top().map_err(window_error)?;
     state.expanded = Some(ExpandedWindow {
         position,
-        size,
+        inner_size,
         maximized,
         always_on_top,
     });
@@ -579,7 +580,7 @@ pub fn collapse(
     let target = if let Some(saved) = current_settings.compact_position {
         clamp_position(&monitor, bubble_size, saved.x as i64, saved.y as i64)
     } else {
-        let desired_y = position.y + (size.height as i32 - bubble_size.height as i32) / 2;
+        let desired_y = position.y + (outer_size.height as i32 - bubble_size.height as i32) / 2;
         default_collapsed_position(&monitor, bubble_size, desired_y)
     };
 
@@ -706,7 +707,7 @@ pub fn expand(
         .set_always_on_top(expanded.always_on_top)
         .map_err(window_error)?;
     let _ = window.set_skip_taskbar(false);
-    window.set_size(expanded.size).map_err(window_error)?;
+    window.set_size(expanded.inner_size).map_err(window_error)?;
     window
         .set_position(expanded.position)
         .map_err(window_error)?;

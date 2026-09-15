@@ -1337,13 +1337,13 @@ pub fn run() {
                 drop(apps);
                 settings_store.clear_legacy_monitored_ports()?;
             }
-            let initial_settings = settings_store.get()?;
             app.manage(app_state);
             app.manage(settings_store);
             app.manage(bubble::BubbleController::default());
             app.manage(window_state::WindowBoundsController::default());
             if let Some(window) = app.get_webview_window("main") {
-                window_state::restore_initial(&window, &initial_settings)?;
+                let settings = app.state::<SettingsStore>();
+                window_state::restore_initial(&window, &settings)?;
             }
 
             let show_item = MenuItem::with_id(app, "show", "Open Port Lens", true, None::<&str>)?;

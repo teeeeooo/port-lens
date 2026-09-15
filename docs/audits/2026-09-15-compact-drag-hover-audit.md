@@ -138,6 +138,25 @@ PoC-B — independent native drag surface, only if PoC-A fails:
 
 Hover policy for either PoC: visible hover list should hide at drag start; do not attempt to make the separate hover HWND continuously follow the compact bar during drag.
 
+## Separate finding: expanded-window size drift
+
+While manually repeating compact → `Open`, the expanded main window was observed to grow wider after each cycle. This is independent of PoC-A/B drag work and predates the native-grip experiment.
+
+Source audit identified an outer/inner size semantic mismatch introduced with compact mode in `bed908d`:
+- `bubble::collapse()` captured `window.outer_size()` into the transient expanded-window state
+- `bubble::expand()` restored that value through `window.set_size(...)`
+- Tauri runtime maps `WindowMessage::SetSize` to Tao `window.set_inner_size(...)`
+- therefore the previously captured title bar/border dimensions were reapplied as client size, and Windows added the non-client frame again
+
+The persisted expanded-window path had the same defect: `window_state::capture_expanded_bounds()` stored `outer_size()` while `restore_initial()` restored the value with `set_size()`.
+
+PR #4 fixes both paths by defining width/height as inner/client dimensions. `ExpandedWindow.size` is renamed to `inner_size`; transient compact restore captures `inner_size()`, and persisted `expandedBounds` now captures `inner_size()` as logical dimensions. Existing preview settings are backward-compatible through `expandedBoundsAreInner`: missing/false means legacy outer-size semantics, so startup subtracts the currently measured non-client frame once and rewrites the actual post-fit inner bounds with the marker set true.
+
+Regression gate before resuming B1.2:
+- compact → `Open` at least 10 consecutive cycles with stable main-window width and height
+- close/relaunch once in expanded mode and confirm no one-time size growth
+- verify ordinary manual resize still persists across restart
+
 ## Do-not-regress constraints
 
 - Keep PR #4 unmerged until a Windows manual gate passes.
