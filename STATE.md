@@ -12,7 +12,8 @@ Last updated: 2026-09-15
 - Windows Bundle #26: run `34911753874`
 
 Detailed compact drag/hover evidence and references:
-`docs/audits/2026-09-15-compact-drag-hover-audit.md`
+- `docs/audits/2026-09-15-compact-drag-hover-audit.md`
+- `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`
 
 ## Windows manual state
 
@@ -67,7 +68,7 @@ PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser 
   - residual drag stutter remains
   - `Open` after drag remains PASS
 
-PoC-B is therefore **CLOSED / FAILED**. The B1.2 control rules out synchronous child-WndProc re-entry as the primary cause. Do not continue tuning `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, `SendMessageW`/`PostMessageW`, or the Windows move/size modal-loop path for this compact drag problem.
+PoC-B is therefore **CLOSED / FAILED**. The B1.2 control rules out synchronous child-WndProc re-entry as the primary cause. Generic `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, or Send/Post timing tuning remains closed. A later PoC-C deep audit found one evidence-backed exception: Winit 0.30.10 fixed the Windows ~500 ms title-bar pause by posting a synthetic `WM_MOUSEMOVE` with `lParam=0`, while Tao 0.35.3/0.36.0/0.37.0 still forward the original non-client lParam. That exact compatibility control is the only caption-loop experiment reopened.
 
 ## Expanded-window size drift
 
@@ -82,9 +83,9 @@ A separate lifecycle bug was found while repeatedly testing compact → `Open`: 
 ## Next action
 
 1. Keep PR #4 open and unmerged; production drag behavior remains unresolved.
-2. Treat both PoC-A (WebView2 non-client drag regions) and PoC-B (native grip → Windows caption/modal-loop drag) as closed failed substrates.
-3. Before any new drag implementation, perform a fresh PoC-C audit of approaches that **do not use the Windows caption/move modal loop** and do not reintroduce WRY child HWND subclassing or per-frame `SetWindowPos`.
-4. Preserve the validated size-drift fix, hover-window architecture, Open deadlock fix, taskbar behavior, mixed-DPI/multi-monitor handling, startup gating, and PR #3 runtime lifecycle protections.
-5. Integrate nothing into PR #4 until a new substrate passes Windows manual validation.
+2. PoC-C deep audit is complete. The selected control is the Winit 0.30.10-compatible zero-lParam modal wake-up documented in `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`.
+3. Implement PoC-C only on a new isolated branch/worktree derived from the proven native-grip/B1.2 baseline: keep the queued `WM_NCLBUTTONDOWN/HTCAPTION` handoff and add an immediately queued `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`. Change no other drag/lifecycle variable.
+4. Manual decision gate: full PASS → design integration/lifecycle; partial PASS (initial pause fixed, residual stutter only) → isolate Port Lens `Moved` callback work; unchanged FAIL → permanently close caption/modal-loop work and evaluate native captured-pointer positioning as the fallback.
+5. Preserve the validated size-drift fix, hover-window architecture, Open deadlock fix, taskbar behavior, mixed-DPI/multi-monitor handling, startup gating, and PR #3 runtime lifecycle protections. Integrate nothing into PR #4 until a candidate passes Windows manual validation.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.

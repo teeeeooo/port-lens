@@ -42,18 +42,33 @@ Root cause and fix:
 - legacy outer-size `expandedBounds` are converted once and rewritten with `expandedBoundsAreInner=true`
 - Bundle `34929848061` manual validation passed: repeated compact → `Open`, restart restore, and manual-resize restore stayed stable
 
-## 4. PoC-C drag-substrate audit
+## 4. PoC-C Winit compatibility control
 
-Status: **NEXT / AUDIT FIRST**.
+Status: **AUDIT COMPLETE / CONTROL SELECTED**.
 
-Before implementation, survey alternatives that satisfy all of these constraints:
-- do not use Tauri/Tao `start_dragging()` or Windows caption/move modal-loop dragging
-- do not use WebView2 non-client draggable regions (`app-region`)
-- do not subclass/intercept the WRY/WebView2 child HWND
-- do not implement per-frame `SetWindowPos` drag or a high-frequency JS→IPC position loop
-- keep `Open`, hover, taskbar overlap, saved position, mixed-DPI/multi-monitor, and compact sizing behavior intact
+Deep audit: `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`.
 
-The audit should compare concrete Windows/Tauri reference implementations and select at most one narrowly scoped PoC-C candidate before code changes.
+Selected control:
+- Winit 0.30.10 fixed a documented Windows ~500 ms title-bar pause by queuing a dummy `WM_MOUSEMOVE` with `lParam=0` before/while the native move-size loop takes over
+- Port Lens' Tao 0.35.3 still forwards the original non-client lParam; direct source checks show Tao 0.36.0 and 0.37.0 retain the same behavior
+- B1.2 did not test this fix because its parent `WM_NCLBUTTONDOWN` still passed through Tao's old synthetic-mousemove handler
+- PoC-C should reuse the isolated native-grip/B1.2 path and add only an immediately queued `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`; no delays, dependency upgrade, hover-lifecycle change, or persistence change in the same control
+
+Immediate Windows gate:
+- movement begins on the first slow cursor movement
+- pause → jump and fixed cursor/window offset disappear
+- repeated slow/fast drag has no catch-up jump; record residual micro-stutter separately
+- `Open` after drag remains PASS
+
+Decision tree:
+- full PASS → design production integration and real drag-end/hover recovery separately
+- partial PASS (dead period fixed, residual stutter remains) → isolate Port Lens/Tauri `Moved` callback work next
+- unchanged FAIL → permanently close caption/modal-loop work
+
+Fallback after an unchanged FAIL only:
+- native grip `SetCapture` + event-driven same-thread `SetWindowPos`, with cleanup on `WM_LBUTTONUP`/`WM_CAPTURECHANGED`
+- still prohibited: timer-driven positioning and high-frequency JS → IPC → backend movement loops
+- the previous blanket `SetWindowPos` ban is therefore narrowed to those asynchronous/high-frequency architectures; direct native movement is not approved unless PoC-C fails first
 
 ## 5. PR #4 integration and manual gate
 
