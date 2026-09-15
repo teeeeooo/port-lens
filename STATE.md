@@ -1,74 +1,48 @@
 # Port Lens State
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 
 ## Current baseline
 
-Port Lens v0.3.0 preview is a Tauri/Rust + React/TypeScript desktop app for discovering TCP listeners and managing selected local services.
+- product: Port Lens v0.3.0 preview, Tauri/Rust + React/TypeScript
+- merged `main`: `bee52e3` (PR #3 runtime reattach/lifecycle hardening)
+- active branch: `feature/compact-app-hover`
+- PR #4: OPEN, targets `main`, **do not merge yet**
+- Windows-tested code baseline: `43d4c15645c763d1dc9fc5caa20b81cf3802b0c0`
+- Windows Bundle #26: run `34911753874`
 
-Current merged baseline: `bee52e3` (PR #3, verified runtime reattach + lifecycle transition hardening).
+Detailed compact drag/hover evidence and references:
+`docs/audits/2026-09-15-compact-drag-hover-audit.md`
 
-Active branch: `feature/compact-app-hover`; PR #4 targets `main` and remains unmerged pending final Windows compact-mode validation.
+## Windows manual state
 
-PR #3 manual Windows validation passed:
-- surviving Port Lens-started App reattaches after Port Lens restart
-- verified reattached Stop works
-- Stop no longer exposes the provisional lifecycle-verification message
+- compact hover flicker: PASS after split into dedicated `compact-hover` window
+- compact `Open` → expanded main UI: PASS on Bundle #26
+- compact drag: FAIL; native drag can start late after cursor movement and then retain a fixed cursor/window offset
+- hover-visible drag: FAIL UX; separate hover window remains at its previous screen position while the compact bar moves
+- compact bottom rounding: PASS
+- startup `state not managed` race: PASS
+- main window initial/work-area sizing: PASS
 
-PR #4 local validation after the compact-window architecture rework and follow-up fixes:
-- frontend production build: PASS
-- Rust tests: 33/33 PASS
-- native clippy with warnings denied: PASS
-- cargo fmt / diff check: PASS
-- Windows-target cross-clippy remains unavailable locally because the macOS toolchain lacks `llvm-rc`; Windows CI is the authoritative compile gate
+The remaining drag issue persists after Port Lens removed mouse-down hover IPC, per-move hover hiding, drag-time persistence, and drag-time z-order work. Current evidence points to the Tauri/Tao Windows drag substrate rather than the App hover scan/render path.
 
-Latest Windows manual evidence:
-- hover open/close flicker: PASS after splitting the hover panel into its own window
-- Windows Bundle #24: native child-window interception regressed to no drag and could hang Open
-- Windows Bundle #25: Open still hung while expanding and drag could start late with a fixed cursor/window offset
-- code audit identified a synchronous BubbleController lock re-entry during expand plus a competing hover-hide IPC on drag mouse-down; both are removed in the current revision
+## Active constraints
 
-## Product model
+- Do not patch the current `data-tauri-drag-region` path further before substrate PoCs.
+- Do not reintroduce Bundle #24 WRY/WebView2 child HWND subclassing.
+- Preserve the Bundle #26 compact expansion deadlock fix.
+- Preserve the separate hover-window architecture unless a safer replacement is proven; it solved the original flicker.
+- On drag start, the intended hover policy is `hide`, not continuous cross-window tracking.
+- Preserve taskbar overlap/topmost behavior, saved-position restore, mixed-DPI/multi-monitor behavior, startup gating, and compact clipping.
+- Preserve PR #3 runtime reattach identity/suppression logic unchanged.
 
-`Listening Ports` is discovery-only. Registering a Port creates a persistent `App` immediately.
+## Next action
 
-An App may be monitoring-only, or may gain Start / Stop / Restart after both Working Directory and Start Command are configured.
+Start with an isolated Windows PoC, not production integration:
 
-Port Lens keeps lightweight inventory scanning separate from targeted monitoring of registered Ports. OS scans run off the Tauri command thread and use timeout protection.
+1. PoC-A: WebView2 `msWebView2EnableDraggableRegions` + CSS `app-region: drag/nodrag`.
+2. Validate immediate capture, no fixed offset/catch-up, responsive `Open`, and multi-WebView startup stability.
+3. If PoC-A fails, PoC-B: an independent Win32 drag surface that does not subclass the WRY/WebView2 child HWND.
+4. Integrate only the Windows-manually-validated mechanism into PR #4.
 
-## Managed process behavior
-
-Windows Start Commands are executed through hidden `cmd.exe` with stdout/stderr redirected to per-App logs. Quoted command content is passed using raw Windows command-line handling so paths such as `-File "C:\path with spaces\script.ps1"` survive intact.
-
-Port Lens records managed root PID, exit code, elapsed runtime, expected/unexpected exit state, and early exit diagnostics. A process that exits unexpectedly within 10 seconds is surfaced as an early exit.
-
-Windows can recover lifecycle authority after Port Lens restarts only after verifying the persisted listener generation and managed root process identity. Reattached Stop re-verifies root identity immediately before termination. Stop / Restart suppress reattach while destructive lifecycle work is in progress, and managed refresh ordering prevents provisional ownership state from leaking into the UI.
-
-## Compact mode
-
-Compact mode is enabled by default. Minimize enters the floating compact monitor; disabling Compact mode makes Minimize hide to tray. Close exits the application.
-
-On Windows, user drag may use the full monitor bounds, including the taskbar-reserved area. A topmost keeper protects intentional taskbar overlap. Non-Windows desktop builds retain the 12 px edge margin policy.
-
-PR #4 now uses two persistent desktop windows in compact mode. The main window becomes a fixed-size 276×46 compact bar; a separate hidden `compact-hover` WebViewWindow renders the registered-App list with green/gray status dots, capped at 8 visible rows with internal scrolling. Hover no longer resizes the main compact HWND.
-
-The hover window is created once at app startup, owned by the main window, non-focusable, transparent, taskbar-hidden, and reused with show/hide. Main sends already-computed App status data to it, so no duplicate listener/process scan is introduced. A revision handshake waits until the hidden hover WebView has committed the requested list before showing the native panel.
-
-Windows compact dragging uses Tauri's built-in deep drag region, with `core:window:allow-start-dragging` granted only to the main window. The experimental WebView-child Win32 subclass path from Bundle #24 remains retired. Bundle #25 showed that even one hover-hide invoke issued from the drag mouse-down could queue ahead of the built-in drag IPC and produce a late native capture with a persistent cursor/window offset, so mouse-down is now local-state-only and performs no Port Lens IPC. The taskbar z-order keeper skips `SetWindowPos` for the full physical left-button-down interval, deferred compact-position persistence waits until release, and the hover HWND is hidden only after the drag has settled. `WindowEvent::Moved` no longer locks BubbleController or performs hover/native work. The 4 px threshold, pointer capture, pointermove IPC, manual per-frame movement, and custom Win32 child-window interception remain absent.
-
-The Bundle #25 Open hang was a lock re-entry deadlock rather than a renderer crash: `bubble::expand()` held the BubbleController mutex while native size/position operations synchronously generated `Moved`/`Resized`, and the event callback attempted to acquire the same mutex. The event callback no longer touches BubbleController, expand marks the compact state transition before native window operations and releases the mutex first, and the frontend Open path now uses a single `expand_from_bubble` invoke instead of a separate hover-hide command followed by expand.
-
-The compact bar again clips its own WebView surface with the validated rounded `clip-path`, including the lower corners. Main-window startup now targets 1020×680 and additionally clamps restored/default bounds to the active monitor work area so saved 760 px-era bounds cannot reopen below the taskbar.
-
-Frontend startup is gated by a builder-managed `StartupGate`. `App` does not mount or call state-dependent commands until backend setup has managed `AppState`, settings, bubble/window controllers, and completed tray setup, eliminating the transient `state not managed` startup race.
-
-## Validation gate
-
-Do not merge PR #4 until the latest Windows Portable is manually checked for:
-- hover panel appears/disappears without compact-bar flicker
-- hover panel contains current App names/statuses and remains scrollable above 8 Apps
-- normal and fast/repeated native drag starts immediately and tracks the pointer without lag, drop, catch-up jump, or a persistent cursor/window offset
-- the Open button remains clickable and does not start native dragging
-- starting drag while the hover panel is visible hides the panel cleanly and moves only the compact bar
-- taskbar overlap/topmost behavior and multi-monitor/mixed-DPI movement remain correct
-- saved compact position restores after restart
+Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.
