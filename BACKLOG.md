@@ -44,7 +44,7 @@ Root cause and fix:
 
 ## 4. PoC-C Winit compatibility control
 
-Status: **IMPLEMENTED / WINDOWS BUILD PASS / MANUAL PENDING**.
+Status: **CLOSED / FAILED**.
 
 Deep audit: `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`.
 
@@ -55,30 +55,32 @@ Selected control:
 - PoC-C should reuse the isolated native-grip/B1.2 path and add only an immediately queued `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`; no delays, dependency upgrade, hover-lifecycle change, or persistence change in the same control
 - a PoC-C PASS does **not** authorize restoring production `data-tauri-drag-region` unchanged: Tao `handle_os_dragging()` still has a separate malformed `WM_NCLBUTTONDOWN` coordinate encoding path, so production integration must retain a validated native initiation path or separately validate a Tao coordinate-packing correction
 
-Implementation evidence:
+Implementation and runtime evidence:
 - isolated branch/worktree: `poc/compact-winit-wakeup` / `/Users/sunjaekim/Developer/port-lens-poc-c`
 - commit `ee2533a` changes only `src-tauri/src/native_drag.rs` and adds the zero-lParam synthetic `WM_MOUSEMOVE` immediately after the existing correctly packed queued caption handoff
 - local gates: frontend build PASS, fmt PASS, clippy PASS, Rust tests 36/36 PASS, diff check PASS
 - Windows Bundle `34941498309` / full SHA `ee2533a54347b2ed883bcbdd573dc1579d901571`: SUCCESS; portable/MSI/NSIS upload PASS
-- manual Windows drag gate: pending
+- manual Windows result: first movement still not immediate; pause → jump remains; cursor offset became worse; catch-up jump became worse; micro-stutter remains; `Open` remains PASS
 
-Immediate Windows gate:
-- movement begins on the first slow cursor movement
-- pause → jump and fixed cursor/window offset disappear
-- repeated slow/fast drag has no catch-up jump; record residual micro-stutter separately
-- `Open` after drag remains PASS
+Conclusion:
+- the Winit-style zero-lParam wake-up does not fix the Port Lens Tao-managed caption path and materially worsens offset/jump behavior on the tested Windows machine
+- permanently close `WM_NCLBUTTONDOWN` / `HTCAPTION` / `SC_MOVE` / Send-vs-Post / zero-lParam wake-up / `data-tauri-drag-region` tuning for this issue
+- preserve PoC-C branch/worktree as evidence; do not integrate its code into PR #4
 
-Decision tree:
-- full PASS → design production integration and real drag-end/hover recovery separately
-- partial PASS (dead period fixed, residual stutter remains) → isolate Port Lens/Tauri `Moved` callback work next
-- unchanged FAIL → permanently close caption/modal-loop work
+## 5. Native captured-pointer positioning audit
 
-Fallback after an unchanged FAIL only:
-- native grip `SetCapture` + event-driven same-thread `SetWindowPos`, with cleanup on `WM_LBUTTONUP`/`WM_CAPTURECHANGED`
-- still prohibited: timer-driven positioning and high-frequency JS → IPC → backend movement loops
-- the previous blanket `SetWindowPos` ban is therefore narrowed to those asynchronous/high-frequency architectures; direct native movement is not approved unless PoC-C fails first
+Status: **NEXT / AUDIT FIRST**.
 
-## 5. PR #4 integration and manual gate
+Candidate boundary:
+- Port Lens-owned native grip only
+- `WM_LBUTTONDOWN`: `SetCapture`, snapshot cursor screen point and parent window rect/grab offset
+- `WM_MOUSEMOVE`: same-thread native `SetWindowPos` only when target position changes
+- `WM_LBUTTONUP` / `WM_CAPTURECHANGED`: terminate drag, persist/clamp once, restore hover eligibility
+- no JS pointer loop, no Tauri command IPC, no `WM_NCLBUTTONDOWN`, no `HTCAPTION`, no Windows move-size modal loop
+
+Before implementation, audit message ordering, capture loss, multi-monitor/mixed-DPI coordinate semantics, topmost/taskbar behavior, WebView2 parent notifications, and whether app `Moved` callbacks must be suppressed during the native drag.
+
+## 6. PR #4 integration and manual gate
 
 Status: BLOCKED on a passing drag-substrate PoC.
 

@@ -149,7 +149,9 @@ The selected control is now implemented in the isolated worktree `/Users/sunjaek
 
 The implementation changes only `src-tauri/src/native_drag.rs`: after posting the correctly packed original screen-point `WM_NCLBUTTONDOWN/HTCAPTION`, the native grip immediately posts `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`. No delay, dependency, hover recovery, persistence, z-order, DPI, or drag-end lifecycle variable is changed.
 
-Local validation is PASS: frontend build, Rust format, clippy with warnings denied, 36/36 Rust tests, and `git diff --check`. Windows Bundle run `34941498309` completed successfully for the exact commit above; Windows package build, portable preparation, and NSIS/MSI/portable artifact uploads all passed. Artifact IDs are portable `10386245220`, MSI `10385409169`, and NSIS `10385402661`. Runtime acceptance remains pending manual Windows validation.
+Local validation is PASS: frontend build, Rust format, clippy with warnings denied, 36/36 Rust tests, and `git diff --check`. Windows Bundle run `34941498309` completed successfully for the exact commit above; Windows package build, portable preparation, and NSIS/MSI/portable artifact uploads all passed. Artifact IDs are portable `10386245220`, MSI `10385409169`, and NSIS `10385402661`.
+
+Windows manual acceptance **FAILED**. The first cursor movement still did not move the window immediately; pause → jump remained; cursor/window offset became worse than B1.2; catch-up jump also became worse; micro-stutter remained; `Open` after drag stayed normal. Because PoC-C changed only the Winit-style zero-lParam wake-up, this control directly rejects that workaround for the Port Lens Tao-managed caption path on the tested machine.
 
 ## PoC-C immediate manual gate
 
@@ -161,10 +163,11 @@ Primary gate:
 - residual stutter is recorded separately from initial-start latency
 - `Open` after drag remains PASS
 
-Interpretation:
-- **full PASS**: zero-lParam wake-up is the leading fix; then design production integration and real drag-end/hover recovery separately
-- **partial PASS**: initial pause/jump/offset disappear but micro-stutter remains; next control is app-layer `Moved` callback isolation during native drag, not another caption timing hack
-- **FAIL**: pause/jump remains materially unchanged; permanently close caption/move-loop work and advance to the manual captured-pointer fallback below
+Interpretation result:
+- **FAIL confirmed**: pause/jump remained, while cursor offset and catch-up jump became worse; only `Open` remained normal
+- the Winit-style zero-lParam wake-up is therefore rejected for this Port Lens path
+- caption/move-loop tuning is permanently closed for this issue: no further `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, Send/Post timing, zero-lParam wake-up, or production `data-tauri-drag-region` variants
+- advance only to the manual captured-pointer fallback below, after an audit of capture lifecycle, coordinate semantics, and per-move side effects
 
 ## Fallback only if PoC-C fails: captured-pointer manual positioning
 
@@ -215,18 +218,18 @@ High confidence:
 - Tao 0.35.3 lacks Winit 0.30.10's explicit zero-lParam workaround for the documented ~500 ms title-bar pause
 - Tao 0.36.0 and 0.37.0 still lack that exact workaround
 
-Medium confidence:
-- the incorrect synthetic mouse-move argument is the main cause of the initial pause and subsequent snap/offset observed in Port Lens
-- Tauri/Tao moved-event processing may amplify residual stutter after the initial pause is fixed
+High confidence after the runtime control:
+- the Winit zero-lParam synthetic mouse-move argument is **not** the missing fix for Port Lens; the exact control failed and made offset/catch-up behavior worse
+- further Tao-managed caption/move-loop timing work has low expected value and is closed for this issue
+- the next useful substrate must avoid `WM_NCLBUTTONDOWN` / `HTCAPTION` and the native move-size modal loop entirely
 
 Still unknown:
-- whether WebView2-backed top-level HWND movement remains visibly stuttery once the non-client dead period is removed
-- how much Port Lens' `Moved` callback and WRY's `NotifyParentWindowPositionChanged()` contribute to residual motion latency
-- whether the product's always-on-top state contributes measurably to residual motion latency
+- whether WebView2-backed top-level HWND movement remains smooth when driven directly by same-thread native `SetWindowPos`
+- how much Port Lens' `Moved` callback and WRY's `NotifyParentWindowPositionChanged()` contribute during direct programmatic movement
+- whether the product's always-on-top/taskbar-overlap policy needs drag-time suppression or special z-order flags
+- the exact mixed-DPI behavior when cursor and parent HWND cross monitors during a captured-pointer drag
 
-A separate minimal-app C0 is retained only as an ambiguity resolver, not as the next mandatory gate. If PoC-C produces a mixed or machine-dependent result that cannot distinguish modal-start latency from framework movement overhead, build two tiny controls with identical frameless geometry: one minimal Tauri app with no application `Moved` handler and one bare Tao+WRY app. Until then, that extra harness would answer a broader question at greater cost than the exact Winit-matched control.
-
-PoC-C is designed to answer the highest-value unknown with one controlled change before the architecture is made more complex.
+A separate minimal Tauri-vs-bare-Tao+WRY harness is no longer the immediate next gate because PoC-C was not mixed or ambiguous: it failed clearly. The next step is instead an audit of the materially different captured-pointer/manual-positioning substrate.
 
 ## External references
 
@@ -245,4 +248,6 @@ PoC-C is designed to answer the highest-value unknown with one controlled change
 
 ## Next action
 
-Create a new isolated PoC-C branch/worktree. Reuse the proven native grip and B1.2 queued caption handoff, adding only the Winit 0.30.10-compatible zero-lParam `WM_MOUSEMOVE` wake-up. Build a Windows portable artifact and manually evaluate the immediate gate above before changing PR #4.
+PoC-C is closed as **FAILED**. Preserve `poc/compact-winit-wakeup` and its Bundle `34941498309` as evidence; do not integrate its code into PR #4.
+
+Before another implementation, audit the captured-pointer/manual-positioning fallback in depth. The audit must settle: `SetCapture`/`ReleaseCapture`/`WM_CAPTURECHANGED` ordering; screen-vs-client coordinate math; exact grab-offset preservation; mixed-DPI and cross-monitor behavior; `SetWindowPos` flags and topmost/taskbar interaction; WRY `NotifyParentWindowPositionChanged()` cost; Port Lens `Moved` callback suppression; one-shot persistence/clamp at drag end; and failure cleanup if capture is stolen. Only after that audit should a new isolated PoC-D be created.
