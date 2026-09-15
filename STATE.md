@@ -48,13 +48,15 @@ The remaining drag issue persists after Port Lens removed mouse-down hover IPC, 
   - previous persistent cursor/window offset after snap is no longer reproduced
   - if hover list is visible when drag begins, the list remains at its old position while `main` moves; it disappears after drag release
 
-WRY `0.55.1` already enables WebView2 non-client-region support through `ICoreWebView2Settings9`, so `additionalBrowserArgs` is not required for `app-region`. A single control variant removes only the redundant browser args before abandoning PoC-A.
+WRY `0.55.1` already enables WebView2 non-client-region support through `ICoreWebView2Settings9`, so `additionalBrowserArgs` is not required for `app-region`. The browser-args-free control `ac954cd` / Windows Bundle `34917910453` also failed manual acceptance: the first hover popup could open, but after any drag the hover popup never returned; drag still paused/jumped and retained visible micro-stutter.
+
+PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser args as the primary cause. The drag-after-hover failure is also consistent with `prepareNativeBubbleDrag()` setting `bubbleHoverSuppressUntilReentry=true` while WebView2 non-client drag does not reliably deliver the DOM `mouseleave` path that clears it. Do not spend more time patching this failed substrate.
 
 ## Next action
 
-1. Validate PoC-A control commit `ac954cd` (same `app-region`, browser args removed) with Windows Bundle run `34917910453`.
-2. If drag still pauses/jumps, close PoC-A as failed; do not keep tuning WebView2 drag-region timing.
-3. Then start PoC-B: an independent Win32 drag surface that does not subclass the WRY/WebView2 child HWND.
+1. Remove the failed PoC-A worktree/branch after preserving commit SHAs and Windows Bundle evidence in this audit history.
+2. Keep PR #4 open and unmerged as the integration line.
+3. Start PoC-B from this branch in a new isolated branch/worktree: a Port Lens-owned native Win32 drag surface that does not subclass the WRY/WebView2 child HWND.
 4. Integrate only a Windows-manually-validated mechanism into PR #4.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.

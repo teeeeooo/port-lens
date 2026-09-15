@@ -122,7 +122,14 @@ Manual Windows result: FAIL overall.
 
 The release-time hide is explained by current `window_state::schedule_persist()`: while the left button is down it defers compact persistence; after release it hides the hover panel and persists the compact position. This does not satisfy the desired drag-start hide policy.
 
-A source audit found that pinned WRY `0.55.1` already calls `ICoreWebView2Settings9::SetIsNonClientRegionSupportEnabled(true)` on Windows. Therefore the browser feature flag is redundant in this stack. Before closing PoC-A, run one control that removes only `additionalBrowserArgs` while keeping the same CSS drag regions. Control commit: `ac954cd`; Windows Bundle run: `34917910453`. If pause/jump persists, treat PoC-A as failed and proceed to PoC-B without further timing patches.
+A source audit found that pinned WRY `0.55.1` already calls `ICoreWebView2Settings9::SetIsNonClientRegionSupportEnabled(true)` on Windows. Therefore the browser feature flag is redundant in this stack.
+
+The browser-args-free control commit `ac954cd` / Windows Bundle `34917910453` built successfully and also failed manual acceptance:
+- hover popup opens at most initially; after any drag it never opens again
+- drag still pauses/jumps and has visible residual stutter
+- the old persistent cursor/window offset remains absent
+
+This closes PoC-A as **FAILED**. Removing `additionalBrowserArgs` did not resolve the drag defect, so the remaining failure belongs to the WebView2 non-client draggable-region approach in this product context, not to the duplicate feature flag. The post-drag hover lockout is consistent with the current frontend state machine: `prepareNativeBubbleDrag()` sets `bubbleHoverSuppressUntilReentry=true`, while reset depends on the DOM `mouseleave` path in `endBubbleHover()`. Native non-client dragging can bypass that expected DOM sequence. Fixing that secondary state bug would not rescue the failed drag substrate, so no further PoC-A patching is planned.
 
 PoC-B — independent native drag surface, only if PoC-A fails:
 - do not subclass or consume mouse messages from the WRY/WebView2 child HWND
@@ -155,4 +162,4 @@ Hover policy for either PoC: visible hover list should hide at drag start; do no
 
 ## Handoff rule
 
-The next session must first verify the actual git/PR state and read `STATE.md`, `BACKLOG.md`, and this audit. It should then design/run PoC-A without changing the production compact-drag path. Only after a PoC passes the defined Windows gate should its mechanism be integrated into PR #4.
+The next session must first verify the actual git/PR state and read `STATE.md`, `BACKLOG.md`, and this audit. PoC-A is closed as failed. Continue with PoC-B on an isolated branch/worktree without changing PR #4 production code until the Windows manual gate passes.

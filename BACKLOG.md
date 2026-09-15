@@ -6,35 +6,32 @@ Only current actionable/deferred work is kept here. Completed implementation his
 
 ## 1. Compact drag substrate PoC-A
 
-Status: CONTROL VALIDATION. Production path remains untouched.
+Status: **CLOSED / FAILED**.
 
-PoC-A1 `46409e2` / Windows Bundle `34915796285` built successfully but failed manual acceptance: hover micro-stutter, hover list usually absent, and drag still pauses then jumps. The old persistent cursor/window offset was removed, so the substrate changed behavior but is not acceptable.
-
-Current work:
-- control commit `ac954cd` removes only redundant `additionalBrowserArgs`
-- keep CSS `app-region: drag` for compact body and `app-region: nodrag` for `Open`
-- rely on WRY 0.55.1 native `ICoreWebView2Settings9` non-client-region enablement
-- validate Windows Bundle run `34917910453`
-- if pause/jump remains, stop PoC-A and move to PoC-B
-
-Acceptance gate:
-- immediate movement after mouse-down
-- no fixed cursor/window offset
-- no normal/fast repeated-drag catch-up
-- `Open` remains responsive
-- no multi-WebView startup/create freeze or deadlock
-- hover list is hidden at drag start rather than tracked during movement
+Evidence:
+- A1 `46409e2` / Windows Bundle `34915796285`: hover micro-stutter, hover list instability, drag pause/jump; persistent cursor/window offset removed
+- control `ac954cd` / Windows Bundle `34917910453`: browser args removed, but drag pause/jump and micro-stutter remain; first hover can open, then hover never returns after any drag
+- no further WebView2 `app-region` timing/flag tuning
 
 ## 2. Compact drag substrate PoC-B
 
-Status: BLOCKED pending the single PoC-A control result.
+Status: **NEXT**.
 
-If WebView2 draggable regions are not viable, test an independent Win32 drag surface/hit-test layer owned by Port Lens.
+Test a Port Lens-owned native Win32 drag surface/hit-test layer from a new isolated branch/worktree based on `feature/compact-app-hover`.
 
-Constraints:
-- do not subclass/consume WRY or WebView2 child-window mouse messages
-- keep `Open` outside the drag surface
-- prove Windows behavior in a minimal package before PR #4 integration
+Initial scope:
+- do not subclass or consume WRY/WebView2 child-window mouse messages
+- keep `Open` and normal WebView hover handling outside the native drag surface
+- prefer a minimal native grip surface first, not an overlay across the whole compact bar
+- hide `compact-hover` at native drag start; do not continuously track the hover HWND during drag
+- prove immediate native capture and normal button/hover behavior in a Windows package before integration
+
+Acceptance gate:
+- immediate movement on mouse-down + movement; no pause/jump or cursor offset
+- repeated slow/fast drag remains smooth
+- hover popup opens before drag and recovers after drag
+- visible hover popup hides at drag start
+- `Open` remains responsive; no startup/deadlock regression
 
 ## 3. PR #4 integration and manual gate
 
