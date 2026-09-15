@@ -63,11 +63,22 @@ PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser 
 - B1.1 drag result: **FAIL**; native grip still has visible pause/jump and residual drag stutter
 - hover-list drag-start hide cannot be evaluated in B1 because hover and native grip are intentionally separate hit regions
 
+## Expanded-window size drift
+
+A separate lifecycle bug was found while repeatedly testing compact → `Open`: the expanded main window grows wider on each cycle. Root cause is an outer/inner size mismatch that predates PoC-B and has existed since compact mode was introduced in `bed908d`.
+
+- compact collapse saved `outer_size()` but expand restored it through `set_size()`, which sets the inner/client size
+- persisted `expandedBounds` had the same mismatch: `outer_size()` was stored and later restored through `set_size()`
+- production fix on PR #4 standardizes both transient and persisted expanded dimensions on inner/client size
+- legacy preview settings are marked with `expandedBoundsAreInner`; old settings without the marker are converted once by subtracting the current non-client frame and then rewritten using inner-size semantics
+- Windows manual gate: repeat compact → `Open` at least 10 times and confirm width/height remain stable; then restart the app and confirm expanded size is preserved without one-time growth
+
 ## Next action
 
-1. Keep PR #4 open and unmerged as the integration line; PoC-B code stays isolated.
-2. Audit one final PoC-B control that removes synchronous child-WndProc re-entrancy: queue the parent caption-drag handoff instead of using blocking `SendMessageW`.
-3. If pause/jump remains in that control, close PoC-B; do not keep tuning Windows caption/modal-loop drag.
-4. Only after a substrate passes Windows manual validation should it be integrated into PR #4.
+1. Keep PR #4 open and unmerged.
+2. Finish Windows manual validation of the expanded-window size fix before resuming drag substrate work.
+3. After the size gate passes, return to the isolated PoC-B branch for one final B1.2 control that queues the parent caption-drag handoff instead of using blocking `SendMessageW`.
+4. If pause/jump remains in B1.2, close PoC-B; do not keep tuning Windows caption/modal-loop drag.
+5. Only after a drag substrate passes Windows manual validation should it be integrated into PR #4.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.
