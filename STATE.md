@@ -62,6 +62,10 @@ PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser 
 - B1.1 manual result: compact entry PASS from both in-app Minimize and native title-bar minimize; post-drag hover reopen PASS
 - B1.1 drag result: **FAIL**; native grip still has visible pause/jump and residual drag stutter
 - hover-list drag-start hide cannot be evaluated in B1 because hover and native grip are intentionally separate hit regions
+- validated size-drift fix synchronized into PoC-B as `c4a821c` so compact/Open testing no longer carries the known width-growth regression
+- B1.2 commit `e20e751`: child `WM_LBUTTONDOWN` now queues `WM_NCLBUTTONDOWN/HTCAPTION` with `PostMessageW` instead of synchronously nesting the parent move loop with `SendMessageW`
+- B1.2 deliberately does not emit `native-compact-drag-ended` immediately because queued delivery has no valid drag-end point yet; hover end lifecycle is deferred until the drag substrate itself passes
+- Windows Bundle `34931769814`: build/package/artifact upload **PASS**; Windows manual drag validation pending
 
 ## Expanded-window size drift
 
@@ -76,9 +80,9 @@ A separate lifecycle bug was found while repeatedly testing compact → `Open`: 
 ## Next action
 
 1. Keep PR #4 open and unmerged.
-2. Return to isolated PoC-B and synchronize the already-validated size-drift fix as a separate baseline commit.
-3. Run one final B1.2 control that queues the parent caption-drag handoff instead of using blocking `SendMessageW`; keep this drag change isolated from the size fix.
-4. If pause/jump remains in B1.2, close PoC-B; do not keep tuning Windows caption/modal-loop drag.
-5. Only after a drag substrate passes Windows manual validation should it be integrated into PR #4.
+2. Manually validate B1.2 Bundle `34931769814`, focusing first on immediate native-grip drag, pause/jump, cursor offset, and residual stutter.
+3. If B1.2 drag remains defective, close PoC-B; do not keep tuning Windows caption/modal-loop drag.
+4. If B1.2 drag passes, add a separate lifecycle follow-up for a real drag-end signal before judging hover-hide/recovery behavior.
+5. Only after the complete drag/lifecycle path passes Windows manual validation should it be integrated into PR #4.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.

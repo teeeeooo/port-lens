@@ -22,7 +22,9 @@ Isolated branch/worktree: `poc/compact-native-drag-surface` / `/Users/sunjaekim/
 Evidence so far:
 - B1 `3d9b12e` / Windows Bundle `34921608950`: package PASS, manual compact entry FAIL at native child-window creation (`CreateWindowExW` returned NULL)
 - B1.1 `d7da866` / Windows Bundle `34924195134`: manifest-only Windows compatibility control; compact entry PASS from both minimize paths; post-drag hover reopen PASS; native grip drag still FAILS with pause/jump and residual stutter
-- one final B1.2 control is allowed: replace blocking `SendMessageW` parent handoff with queued/asynchronous message delivery while keeping all other variables fixed; if drag still fails, close PoC-B
+- `c4a821c`: synchronizes the separately validated expanded-window size fix into the PoC baseline
+- B1.2 `e20e751` / Windows Bundle `34931769814`: queues the parent caption-drag message with `PostMessageW`; build/package PASS, Windows manual drag validation pending
+- B1.2 intentionally omits a fake immediate drag-ended event; if drag smoothness passes, drag-end lifecycle is a separate follow-up rather than part of this control
 
 Initial scope:
 - do not subclass or consume WRY/WebView2 child-window mouse messages
@@ -31,12 +33,14 @@ Initial scope:
 - hide `compact-hover` at native drag start; do not continuously track the hover HWND during drag
 - prove immediate native capture and normal button/hover behavior in a Windows package before integration
 
-Acceptance gate:
+B1.2 immediate gate:
 - immediate movement on mouse-down + movement; no pause/jump or cursor offset
-- repeated slow/fast drag remains smooth
-- hover popup opens before drag and recovers after drag
-- visible hover popup hides at drag start
-- `Open` remains responsive; no startup/deadlock regression
+- repeated slow/fast drag remains smooth with no residual catch-up lag
+- `Open` still enters the expanded UI normally after drag
+
+Full adoption gate after a smooth substrate is proven:
+- implement a real drag-end signal, then validate hover popup hide/recovery
+- preserve startup/deadlock, taskbar, saved-position, and multi-monitor/mixed-DPI behavior
 
 ## 3. Expanded main-window size drift
 
@@ -53,7 +57,7 @@ Root cause and fix:
 
 Status: BLOCKED on a passing drag-substrate PoC.
 
-After the size gate and one drag PoC pass:
+After one drag PoC passes:
 - integrate only the validated drag mechanism into `feature/compact-app-hover`
 - preserve the current hover-window flicker fix and Bundle #26 Open deadlock fix
 - run Windows/macOS CI and Windows packaging
