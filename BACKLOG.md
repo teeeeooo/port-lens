@@ -69,7 +69,7 @@ Conclusion:
 
 ## 5. PoC-D non-caption drag audit
 
-Status: **NEXT / AUDIT FIRST**.
+Status: **D0 IMPLEMENTED / WINDOWS MANUAL VALIDATION PENDING**.
 
 History correction: `78c006c` → `cca33ce` already implemented the core Token Lens pattern in Port Lens: pointer capture, 4 px threshold, grab-ratio-only IPC, backend current-cursor resampling, and manual positioning. `cca33ce` Windows Bundle `34802709558` built successfully, while repository docs still showed Windows manual validation pending; no preserved manual FAIL for that final form was found. `7144042` removed it during the separate-hover refactor based on expected IPC/manual-movement risk rather than recorded Windows failure. See `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`.
 
@@ -77,7 +77,7 @@ Audit two candidates before implementation:
 - **D0 — Token Lens exact-style control:** current fixed 276×46 main HWND + separate `compact-hover`; DOM pointer capture and 4 px threshold; repeated lightweight move invoke carries only grab ratio; backend samples current cursor at execution time; Windows movement is position-only; drag-time persistence/z-order work is suppressed.
 - **D1 — native captured-pointer control:** Port Lens-owned native grip; `WM_LBUTTONDOWN` → `SetCapture` and snapshot cursor/parent rect; same-thread `WM_MOUSEMOVE` → position-only `SetWindowPos`; `WM_LBUTTONUP` / `WM_CAPTURECHANGED` terminates and persists/clamps once.
 
-Both avoid `WM_NCLBUTTONDOWN`, `HTCAPTION`, and the Windows move-size modal loop. D0 must not be rejected solely because it uses repeated IPC; current-cursor resampling means it does not simply replay stale frontend coordinates. Compare expected queueing, capture-loss behavior, mixed-DPI/cross-monitor math, topmost/taskbar interaction, WebView2 position notifications, Port Lens `Moved` callbacks, and drag-end persistence before selecting the first PoC-D control.
+Audit result: no architectural blocker was found for D0, so D0 was selected before D1. The implementation removes the compact drag region, uses DOM pointer capture with the existing 4 px threshold, sends only grab ratios plus a one-shot hover-hide flag, samples the current cursor in Rust, and reuses the existing Windows position-only `SetWindowPos`. It does not perform per-move React state updates, settings writes, z-order correction, size changes, or hover repositioning. Local frontend build/fmt/clippy/Rust 36/36/diff-check gates pass. D1 remains fallback only if the Windows D0 manual gate fails.
 
 ## 6. PR #4 integration and manual gate
 

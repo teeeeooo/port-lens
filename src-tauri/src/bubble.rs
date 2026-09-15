@@ -1,5 +1,5 @@
 use crate::settings::{SettingsStore, WindowPosition};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tauri::{LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
@@ -99,6 +99,15 @@ pub struct BubblePayload {
     pub collapsed: bool,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BubbleDragOffset {
+    pub offset_ratio_x: f64,
+    pub offset_ratio_y: f64,
+    #[serde(default)]
+    pub hide_hover: bool,
+}
+
 fn window_error(error: tauri::Error) -> String {
     format!("bubble window operation failed: {error}")
 }
@@ -178,6 +187,21 @@ fn clamp_position(
             policy.edge_margin(),
         )
     }
+}
+
+fn drag_desired_position(
+    cursor_x: f64,
+    cursor_y: f64,
+    size: PhysicalSize<u32>,
+    offset_ratio_x: f64,
+    offset_ratio_y: f64,
+) -> (i64, i64) {
+    let ratio_x = offset_ratio_x.clamp(0.0, 1.0);
+    let ratio_y = offset_ratio_y.clamp(0.0, 1.0);
+    (
+        (cursor_x - ratio_x * size.width as f64).round() as i64,
+        (cursor_y - ratio_y * size.height as f64).round() as i64,
+    )
 }
 
 fn hover_panel_position_in_bounds(
@@ -505,6 +529,38 @@ pub fn show_hover_panel(
     hover.show().map_err(window_error)
 }
 
+pub fn move_to_cursor(
+    window: &WebviewWindow,
+    controller: &BubbleController,
+    settings: &SettingsStore,
+    offset: BubbleDragOffset,
+) -> Result<(), String> {
+    if !is_collapsed(controller)? {
+        return Ok(());
+    }
+    if offset.hide_hover {
+        hide_hover_panel(window)?;
+    }
+
+    let cursor = window.cursor_position().map_err(window_error)?;
+    let monitor = window
+        .monitor_from_point(cursor.x, cursor.y)
+        .map_err(window_error)?
+        .or_else(|| window.current_monitor().ok().flatten())
+        .ok_or_else(|| "No monitor is available while moving the compact bubble.".to_string())?;
+    let current_settings = settings.get()?;
+    let size = bubble_physical_size(current_settings.bubble_scale, monitor.scale_factor());
+    let (desired_x, desired_y) = drag_desired_position(
+        cursor.x,
+        cursor.y,
+        size,
+        offset.offset_ratio_x,
+        offset.offset_ratio_y,
+    );
+    let target = clamp_position(&monitor, size, desired_x, desired_y);
+    set_compact_position(window, target)
+}
+
 pub fn persist_compact_position(
     window: &WebviewWindow,
     controller: &BubbleController,
@@ -744,6 +800,19 @@ mod tests {
                 0,
             ),
             PhysicalPosition::new(1500, 66)
+        );
+    }
+
+    #[test]
+    fn drag_position_preserves_grab_ratio_and_clamps_ratios() {
+        let size = PhysicalSize::new(200, 100);
+        assert_eq!(
+            drag_desired_position(500.0, 400.0, size, 0.25, 0.5),
+            (450, 350)
+        );
+        assert_eq!(
+            drag_desired_position(500.0, 400.0, size, -1.0, 2.0),
+            (500, 300)
         );
     }
 

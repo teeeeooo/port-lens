@@ -84,3 +84,21 @@ Windows manual primary gate:
 Secondary gate after primary PASS: taskbar overlap/topmost, restart position restore, and mixed-DPI/multi-monitor crossing.
 
 Do not integrate PoC-D into PR #4 until Windows manual validation passes.
+
+## D0 implementation status
+
+D0 is now implemented on the isolated PoC-D branch. The compact bar no longer declares a Tauri drag region. React owns pointer capture and the 4 px click-vs-drag threshold, while each move invoke carries only the original grab ratios; cursor coordinates are never sent from the frontend.
+
+Rust `move_compact_bubble` validates compact state, optionally hides `compact-hover` on the first real movement, samples the current cursor, resolves the current monitor, derives the compact physical size from that monitor's scale factor, preserves the grab ratio, clamps the target through the existing policy, and calls the existing position-only move helper.
+
+Static inspection confirms the PoC-D drag implementation contains no `data-tauri-drag-region`, `start_dragging`, `WM_NCLBUTTONDOWN`, `HTCAPTION`, or `SC_MOVE` path. The old main-window start-dragging capability file remains present but unused so the PoC does not mix an unrelated permission cleanup into the drag control.
+
+Local validation after implementation:
+- `npm ci`: PASS, 0 vulnerabilities
+- `npm run build`: PASS
+- `cargo fmt --check`: PASS
+- `cargo clippy --all-targets --all-features -- -D warnings`: PASS
+- `cargo test`: PASS, 36/36
+- `git diff --check`: PASS
+
+Windows package/runtime validation remains pending. A package PASS will prove compilation only; the drag substrate remains unproven until the manual gate above passes.
