@@ -25,25 +25,22 @@ fn scaled_geometry(bubble_scale: f64, monitor_scale: f64) -> (i32, i32, i32, i32
 mod windows_impl {
     use super::{scaled_geometry, NativeDragSurface};
     use std::{ffi::c_void, mem};
-    use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+    use tauri::{Manager, WebviewWindow};
     use windows::core::w;
     use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
     use windows::Win32::UI::WindowsAndMessaging::{
         CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos,
-        GetWindowLongPtrW, SendMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW,
+        GetWindowLongPtrW, PostMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW,
         SetWindowPos, ShowWindow, GWLP_USERDATA, GWLP_WNDPROC, HTCAPTION, HTCLIENT, HWND_TOP,
         LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_LBUTTONDOWN,
         WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WNDPROC, WS_CHILD, WS_EX_LAYERED,
     };
 
-    const DRAG_ENDED_EVENT: &str = "port-lens://native-compact-drag-ended";
-
     struct DragSurfaceContext {
         parent: usize,
         hover: usize,
         original_proc: isize,
-        app: AppHandle,
     }
 
     fn hwnd_from_raw(raw: usize) -> HWND {
@@ -88,16 +85,15 @@ mod windows_impl {
                 let _ = unsafe { ReleaseCapture() };
                 let mut point = POINT::default();
                 if unsafe { GetCursorPos(&mut point) }.is_ok() {
-                    unsafe {
-                        SendMessageW(
-                            hwnd_from_raw(context.parent),
+                    let _ = unsafe {
+                        PostMessageW(
+                            Some(hwnd_from_raw(context.parent)),
                             WM_NCLBUTTONDOWN,
-                            Some(WPARAM(HTCAPTION as usize)),
-                            Some(pack_screen_point(point)),
-                        );
-                    }
+                            WPARAM(HTCAPTION as usize),
+                            pack_screen_point(point),
+                        )
+                    };
                 }
-                let _ = context.app.emit_to("main", DRAG_ENDED_EVENT, ());
                 LRESULT(0)
             }
             WM_NCDESTROY => {
@@ -160,7 +156,6 @@ mod windows_impl {
             parent: parent.0 as usize,
             hover,
             original_proc,
-            app: window.app_handle().clone(),
         });
         let context_ptr = Box::into_raw(context);
         unsafe { SetWindowLongPtrW(child, GWLP_USERDATA, context_ptr as isize) };
