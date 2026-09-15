@@ -1241,10 +1241,21 @@ fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
 fn expand_from_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
+    diagnostics: State<'_, Diagnostics>,
 ) -> Result<bubble::BubblePayload, String> {
-    let payload = bubble::expand(&window, &controller, true)?;
-    emit_bubble_state(&window, payload);
-    Ok(payload)
+    diagnostics.record("INFO", "compact_expand", "start");
+    let result = bubble::expand(&window, &controller, true);
+    match result {
+        Ok(payload) => {
+            emit_bubble_state(&window, payload);
+            diagnostics.record("INFO", "compact_expand", "complete");
+            Ok(payload)
+        }
+        Err(error) => {
+            diagnostics.record("ERROR", "compact_expand", format!("error={error}"));
+            Err(error)
+        }
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -1444,13 +1455,6 @@ pub fn run() {
                                 }
                             }
                         } else {
-                            if matches!(event, WindowEvent::Moved(_)) {
-                                let controller =
-                                    window.app_handle().state::<bubble::BubbleController>();
-                                if bubble::is_collapsed(&controller).unwrap_or(false) {
-                                    let _ = bubble::set_native_move_active(&controller, true);
-                                }
-                            }
                             window_state::schedule_persist(webview);
                         }
                     }

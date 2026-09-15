@@ -46,7 +46,7 @@ Implemented behavior:
 
 ## 3. Compact hover App list
 
-Status: active on `feature/compact-app-hover` via PR #4, retargeted to `main`. The fixed compact window + dedicated hover window architecture remains. Windows Bundle #24's experimental WebView-child Win32 drag interception failed manual validation: drag could be completely unavailable and Open could hang the app. That path is retired. The current revision returns to Tauri's known-working deep drag region and instead removes drag-time interference from hover hiding, taskbar z-order maintenance, and deferred position persistence. Local frontend build, 33 Rust tests, native clippy, and Windows-target clippy pass. Awaiting fresh Windows CI/package and manual validation before merge.
+Status: active on `feature/compact-app-hover` via PR #4, retargeted to `main`. The fixed compact window + dedicated hover window architecture remains. Bundle #24's WebView-child Win32 interception is retired. Bundle #25 restored Tauri deep drag but manual validation still found late drag capture with a fixed cursor/window offset and an Open hang. The current revision removes the remaining mouse-down hover-hide IPC, defers hover hiding/persistence until button release, removes BubbleController access from synchronous `Moved`/`Resized` handling, and releases compact-state locking before native expand operations. Local validation is rerun before the next Windows package; PR #4 remains unmerged.
 
 Goal: keep the compact bar stable while exposing a lightweight registered-App list on hover and preserving reliable drag behavior.
 
@@ -60,10 +60,11 @@ Implemented behavior:
 - Windows compact drag uses Tauri's built-in `data-tauri-drag-region="deep"` path again, with start-dragging capability scoped only to the main window
 - the experimental WebView-child `WM_LBUTTONDOWN` subclass path from Bundle #24 is removed completely
 - the 4 px threshold, pointer capture, pointermove IPC, manual per-frame `SetWindowPos`, and per-`Moved` hover `hide()` paths remain removed
-- if the hover panel is already visible at mouse-down, the frontend sends one asynchronous hide request; otherwise drag start adds no Port Lens IPC work
+- drag mouse-down performs only local React state cleanup; it issues no Port Lens IPC before Tauri's built-in drag handoff
 - the taskbar z-order keeper checks physical left-button state and skips all z-order `SetWindowPos` work for the full button-down interval
-- deferred compact-position persistence also waits for left-button release, so a pause while still holding the drag cannot trigger clamp/save/z-order work mid-drag
-- `WindowEvent::Moved` only marks native movement active; the final stable position is persisted after release and normal z-order protection then resumes
+- deferred compact-position persistence waits for left-button release; after the drag settles it hides the hover HWND once, persists/clamps the final position, and then normal z-order protection resumes
+- `WindowEvent::Moved`/`Resized` only schedule deferred persistence and never lock BubbleController or hide the hover window
+- compact Open uses one backend expand command; the expanded-state mutex is released before native resize/decorations/position calls so synchronous window events cannot re-enter the same lock
 - the compact WebView surface uses rounded `clip-path` clipping on both shell and bar, restoring all four rounded corners
 - main-window startup defaults to 1020×680 and clamps both saved/default bounds into the active monitor work area
 - frontend state-dependent commands are blocked behind a startup-ready gate until all backend managed state is installed

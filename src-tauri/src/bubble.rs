@@ -85,7 +85,6 @@ struct ExpandedWindow {
 #[derive(Debug, Default)]
 struct BubbleState {
     collapsed: bool,
-    native_move_active: bool,
     z_order_generation: u64,
     expanded: Option<ExpandedWindow>,
 }
@@ -115,14 +114,6 @@ pub fn is_collapsed(controller: &BubbleController) -> Result<bool, String> {
         .state
         .lock()
         .map(|state| state.collapsed)
-        .map_err(|_| "Bubble state lock is poisoned.".to_string())
-}
-
-pub fn set_native_move_active(controller: &BubbleController, active: bool) -> Result<(), String> {
-    controller
-        .state
-        .lock()
-        .map(|mut state| state.native_move_active = active)
         .map_err(|_| "Bubble state lock is poisoned.".to_string())
 }
 
@@ -370,19 +361,14 @@ fn start_taskbar_z_order_keeper(
     generation: u64,
 ) {
     thread::spawn(move || loop {
-        let (keep_running, native_move_active) = state
+        let keep_running = state
             .lock()
-            .map(|state| {
-                (
-                    state.collapsed && state.z_order_generation == generation,
-                    state.native_move_active,
-                )
-            })
-            .unwrap_or((false, false));
+            .map(|state| state.collapsed && state.z_order_generation == generation)
+            .unwrap_or(false);
         if !keep_running {
             break;
         }
-        if !native_move_active && !is_compact_drag_input_active() {
+        if !is_compact_drag_input_active() {
             let _ = refresh_taskbar_z_order(&window);
         }
         thread::sleep(Duration::from_millis(250));
@@ -602,7 +588,6 @@ pub fn collapse(
     })?;
     state.z_order_generation = state.z_order_generation.wrapping_add(1);
     let generation = state.z_order_generation;
-    state.native_move_active = false;
     state.collapsed = true;
     drop(state);
     refresh_taskbar_z_order(window)?;
@@ -650,11 +635,24 @@ pub fn expand(
     focus: bool,
 ) -> Result<BubblePayload, String> {
     hide_hover_panel(window)?;
-    let mut state = controller
-        .state
-        .lock()
-        .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
-    if !state.collapsed {
+    let expanded = {
+        let mut state = controller
+            .state
+            .lock()
+            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
+        if !state.collapsed {
+            None
+        } else {
+            let expanded = state
+                .expanded
+                .ok_or_else(|| "No expanded window state is available.".to_string())?;
+            state.z_order_generation = state.z_order_generation.wrapping_add(1);
+            state.collapsed = false;
+            Some(expanded)
+        }
+    };
+
+    let Some(expanded) = expanded else {
         window.show().map_err(window_error)?;
         if window.is_minimized().map_err(window_error)? {
             window.unminimize().map_err(window_error)?;
@@ -663,11 +661,8 @@ pub fn expand(
             window.set_focus().map_err(window_error)?;
         }
         return Ok(BubblePayload { collapsed: false });
-    }
+    };
 
-    let expanded = state
-        .expanded
-        .ok_or_else(|| "No expanded window state is available.".to_string())?;
     window
         .set_min_size(Some(LogicalSize::new(MIN_WIDTH, MIN_HEIGHT)))
         .map_err(window_error)?;
@@ -692,9 +687,6 @@ pub fn expand(
     if focus {
         window.set_focus().map_err(window_error)?;
     }
-    state.z_order_generation = state.z_order_generation.wrapping_add(1);
-    state.native_move_active = false;
-    state.collapsed = false;
     Ok(BubblePayload { collapsed: false })
 }
 

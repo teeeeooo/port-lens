@@ -101,14 +101,16 @@ pub fn schedule_persist(window: WebviewWindow) {
             }
 
             let bubble_controller = app.state::<BubbleController>();
-            if crate::bubble::is_collapsed(&bubble_controller).unwrap_or(false)
-                && crate::bubble::is_compact_drag_input_active()
-            {
+            let collapsed = crate::bubble::is_collapsed(&bubble_controller).unwrap_or(false);
+            if collapsed && crate::bubble::is_compact_drag_input_active() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
 
             if let Some(window) = app.get_webview_window("main") {
+                if collapsed {
+                    let _ = crate::bubble::hide_hover_panel(&window);
+                }
                 let _ = persist_now(&window);
             }
 
@@ -128,13 +130,7 @@ pub fn persist_now(window: &WebviewWindow) -> Result<(), String> {
     let controller = app.state::<BubbleController>();
     let settings = app.state::<SettingsStore>();
     if crate::bubble::is_collapsed(&controller)? {
-        let result = crate::bubble::persist_compact_position(window, &controller, &settings);
-        let release = crate::bubble::set_native_move_active(&controller, false);
-        return match (result, release) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), _) => Err(error),
-            (Ok(()), Err(error)) => Err(error),
-        };
+        return crate::bubble::persist_compact_position(window, &controller, &settings);
     }
     let Some(bounds) = capture_expanded_bounds(window)? else {
         return Ok(());

@@ -462,7 +462,6 @@ function App() {
       bubbleBarInside.current = false;
       bubblePanelInside.current = false;
       bubbleHoverVisible.current = false;
-      await hideCompactHover();
       const state = await expandFromBubble();
       setBubbleMode(state.collapsed);
     } catch (bubbleError) {
@@ -640,15 +639,11 @@ function App() {
   };
 
   const prepareNativeBubbleDrag = () => {
-    const hoverWasVisible = bubbleHoverVisible.current;
     clearBubbleHoverTimers();
     bubbleHoverGeneration.current += 1;
     bubbleHoverSuppressUntilReentry.current = true;
     bubblePanelInside.current = false;
     bubbleHoverVisible.current = false;
-    if (hoverWasVisible) {
-      void hideCompactHover().catch((bubbleError) => setError(messageOf(bubbleError)));
-    }
   };
 
   const perform = async (

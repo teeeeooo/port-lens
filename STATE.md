@@ -22,10 +22,11 @@ PR #4 local validation after the compact-window architecture rework and follow-u
 - cargo fmt / diff check: PASS
 - Windows-target cross-clippy remains unavailable locally because the macOS toolchain lacks `llvm-rc`; Windows CI is the authoritative compile gate
 
-Latest Windows manual evidence before the follow-up fixes:
+Latest Windows manual evidence:
 - hover open/close flicker: PASS after splitting the hover panel into its own window
-- native drag: major improvement, but a very rare start/catch-up jump remained
-- compact bottom corners, startup state race, and initial main-window height still needed correction
+- Windows Bundle #24: native child-window interception regressed to no drag and could hang Open
+- Windows Bundle #25: Open still hung while expanding and drag could start late with a fixed cursor/window offset
+- code audit identified a synchronous BubbleController lock re-entry during expand plus a competing hover-hide IPC on drag mouse-down; both are removed in the current revision
 
 ## Product model
 
@@ -53,7 +54,9 @@ PR #4 now uses two persistent desktop windows in compact mode. The main window b
 
 The hover window is created once at app startup, owned by the main window, non-focusable, transparent, taskbar-hidden, and reused with show/hide. Main sends already-computed App status data to it, so no duplicate listener/process scan is introduced. A revision handshake waits until the hidden hover WebView has committed the requested list before showing the native panel.
 
-Windows compact dragging uses Tauri's built-in deep drag region again, with `core:window:allow-start-dragging` granted only to the main window. The experimental WebView-child Win32 subclass path shipped in Windows Bundle #24 is retired after manual validation showed that drag could fail entirely and the Open button could leave the app unresponsive. The compact bar therefore keeps the last known working drag-start path, while drag-time interference is removed around it: `WindowEvent::Moved` only marks movement active, never hides the hover HWND; the taskbar z-order keeper skips `SetWindowPos` whenever the left mouse button is physically held; and deferred compact-position persistence waits until the button is released before clamping/saving and resuming z-order maintenance. If the hover panel is already visible, mouse-down sends only one asynchronous hide request instead of performing native hide work on every move. The 4 px threshold, pointer capture, pointermove IPC, manual per-frame movement, and custom Win32 child-window interception remain absent.
+Windows compact dragging uses Tauri's built-in deep drag region, with `core:window:allow-start-dragging` granted only to the main window. The experimental WebView-child Win32 subclass path from Bundle #24 remains retired. Bundle #25 showed that even one hover-hide invoke issued from the drag mouse-down could queue ahead of the built-in drag IPC and produce a late native capture with a persistent cursor/window offset, so mouse-down is now local-state-only and performs no Port Lens IPC. The taskbar z-order keeper skips `SetWindowPos` for the full physical left-button-down interval, deferred compact-position persistence waits until release, and the hover HWND is hidden only after the drag has settled. `WindowEvent::Moved` no longer locks BubbleController or performs hover/native work. The 4 px threshold, pointer capture, pointermove IPC, manual per-frame movement, and custom Win32 child-window interception remain absent.
+
+The Bundle #25 Open hang was a lock re-entry deadlock rather than a renderer crash: `bubble::expand()` held the BubbleController mutex while native size/position operations synchronously generated `Moved`/`Resized`, and the event callback attempted to acquire the same mutex. The event callback no longer touches BubbleController, expand marks the compact state transition before native window operations and releases the mutex first, and the frontend Open path now uses a single `expand_from_bubble` invoke instead of a separate hover-hide command followed by expand.
 
 The compact bar again clips its own WebView surface with the validated rounded `clip-path`, including the lower corners. Main-window startup now targets 1020×680 and additionally clamps restored/default bounds to the active monitor work area so saved 760 px-era bounds cannot reopen below the taskbar.
 
