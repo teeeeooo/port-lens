@@ -1,6 +1,7 @@
 mod bubble;
 mod diagnostics;
 mod models;
+mod native_drag;
 mod ports;
 mod process_control;
 mod registry;

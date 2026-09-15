@@ -1,3 +1,4 @@
+use crate::native_drag;
 use crate::settings::{SettingsStore, WindowPosition};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -87,6 +88,7 @@ struct BubbleState {
     collapsed: bool,
     z_order_generation: u64,
     expanded: Option<ExpandedWindow>,
+    native_drag_surface: Option<native_drag::NativeDragSurface>,
 }
 
 #[derive(Debug, Default)]
@@ -581,11 +583,25 @@ pub fn collapse(
         default_collapsed_position(&monitor, bubble_size, desired_y)
     };
 
-    apply_collapsed_window(window, target, bubble_size)?;
-    settings.update_compact_position(WindowPosition {
+    let drag_surface = native_drag::create(
+        window,
+        current_settings.bubble_scale,
+        monitor.scale_factor(),
+    )?;
+    if let Err(error) = apply_collapsed_window(window, target, bubble_size) {
+        native_drag::destroy(drag_surface);
+        return Err(error);
+    }
+    if let Err(error) = settings.update_compact_position(WindowPosition {
         x: target.x,
         y: target.y,
-    })?;
+    }) {
+        native_drag::destroy(drag_surface);
+        return Err(error);
+    }
+    native_drag::destroy(state.native_drag_surface.take());
+    state.native_drag_surface = drag_surface;
+    native_drag::show(state.native_drag_surface.as_ref());
     state.z_order_generation = state.z_order_generation.wrapping_add(1);
     let generation = state.z_order_generation;
     state.collapsed = true;
@@ -622,6 +638,17 @@ pub fn resize_collapsed(
         position.y as i64 + (old_size.height as i64 - new_size.height as i64) / 2,
     );
     set_compact_geometry(window, target, new_size)?;
+    {
+        let state = controller
+            .state
+            .lock()
+            .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
+        native_drag::resize(
+            state.native_drag_surface.as_ref(),
+            current_settings.bubble_scale,
+            monitor.scale_factor(),
+        )?;
+    }
     refresh_taskbar_z_order(window)?;
     settings.update_compact_position(WindowPosition {
         x: target.x,
@@ -635,12 +662,13 @@ pub fn expand(
     focus: bool,
 ) -> Result<BubblePayload, String> {
     hide_hover_panel(window)?;
-    let expanded = {
+    let (expanded, drag_surface) = {
         let mut state = controller
             .state
             .lock()
             .map_err(|_| "Bubble state lock is poisoned.".to_string())?;
-        if !state.collapsed {
+        let drag_surface = state.native_drag_surface.take();
+        let expanded = if !state.collapsed {
             None
         } else {
             let expanded = state
@@ -649,8 +677,10 @@ pub fn expand(
             state.z_order_generation = state.z_order_generation.wrapping_add(1);
             state.collapsed = false;
             Some(expanded)
-        }
+        };
+        (expanded, drag_surface)
     };
+    native_drag::destroy(drag_surface);
 
     let Some(expanded) = expanded else {
         window.show().map_err(window_error)?;
