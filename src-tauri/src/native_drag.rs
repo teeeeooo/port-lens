@@ -34,7 +34,8 @@ mod windows_impl {
         GetWindowLongPtrW, PostMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW,
         SetWindowPos, ShowWindow, GWLP_USERDATA, GWLP_WNDPROC, HTCAPTION, HTCLIENT, HWND_TOP,
         LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_LBUTTONDOWN,
-        WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WNDPROC, WS_CHILD, WS_EX_LAYERED,
+        WM_MOUSEMOVE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WNDPROC, WS_CHILD,
+        WS_EX_LAYERED,
     };
 
     struct DragSurfaceContext {
@@ -85,14 +86,17 @@ mod windows_impl {
                 let _ = unsafe { ReleaseCapture() };
                 let mut point = POINT::default();
                 if unsafe { GetCursorPos(&mut point) }.is_ok() {
+                    let parent = hwnd_from_raw(context.parent);
                     let _ = unsafe {
                         PostMessageW(
-                            Some(hwnd_from_raw(context.parent)),
+                            Some(parent),
                             WM_NCLBUTTONDOWN,
                             WPARAM(HTCAPTION as usize),
                             pack_screen_point(point),
                         )
                     };
+                    let _ =
+                        unsafe { PostMessageW(Some(parent), WM_MOUSEMOVE, WPARAM(0), LPARAM(0)) };
                 }
                 LRESULT(0)
             }
