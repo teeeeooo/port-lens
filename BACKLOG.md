@@ -53,6 +53,7 @@ Selected control:
 - Port Lens' Tao 0.35.3 still forwards the original non-client lParam; direct source checks show Tao 0.36.0 and 0.37.0 retain the same behavior
 - B1.2 did not test this fix because its parent `WM_NCLBUTTONDOWN` still passed through Tao's old synthetic-mousemove handler
 - PoC-C should reuse the isolated native-grip/B1.2 path and add only an immediately queued `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`; no delays, dependency upgrade, hover-lifecycle change, or persistence change in the same control
+- a PoC-C PASS does **not** authorize restoring production `data-tauri-drag-region` unchanged: Tao `handle_os_dragging()` still has a separate malformed `WM_NCLBUTTONDOWN` coordinate encoding path, so production integration must retain a validated native initiation path or separately validate a Tao coordinate-packing correction
 
 Immediate Windows gate:
 - movement begins on the first slow cursor movement

@@ -139,6 +139,8 @@ Starting from the B1.2-style queued handoff:
 
 The second queued message is the compatibility control. Queue order is deliberate: the child posts `WM_NCLBUTTONDOWN`, then immediately posts the zero-lParam `WM_MOUSEMOVE`. When the parent later processes `WM_NCLBUTTONDOWN`, Tao posts its own old non-zero synthetic mouse move. The PoC-C zero-lParam message was already in the thread queue before Tao generated its message, so it is the best non-invasive approximation of Winit 0.30.10's wake-up without patching Tao itself.
 
+A PoC-C PASS would validate the missing modal wake-up, but it would **not** make the current production `data-tauri-drag-region` path safe to restore unchanged. Production still enters Tao `handle_os_dragging()`, whose posted `WM_NCLBUTTONDOWN` encodes the address of a local `POINTS` object rather than packing the signed screen coordinates into the scalar `LPARAM`. The native-grip PoC intentionally bypasses that initiation defect. Therefore production integration after a PASS must either retain a validated native initiation path or carry a separately validated Tao coordinate-packing fix; it must not simply switch the React drag region back on.
+
 Do not change hover recovery, persistence semantics, z-order logic, DPI logic, grip geometry, application `Moved` callbacks, or dependency versions in this control. Do not add a timing delay. The experiment must answer one question: does reproducing Winit 0.30.10's modal wake-up remove the dead period?
 
 ## PoC-C immediate manual gate
