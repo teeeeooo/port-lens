@@ -138,7 +138,16 @@ PoC-B — independent native drag surface:
 
 B1 commit `3d9b12e` implemented a Port Lens-owned 34 px transparent native child HWND over the left compact grip. Windows Bundle `34921608950` built successfully, but manual compact entry failed before drag testing: both compact-entry routes reached native grip creation, and `CreateWindowExW` returned NULL. The in-app Minimize path surfaced `failed to create native compact drag surface: 작업을 완료했습니다. (0x000000)`; the title-bar minimize path appeared unresponsive because that event path discarded the same collapse error.
 
-The follow-up audit found that the B1 grip uses `WS_CHILD | WS_EX_LAYERED`. Microsoft requires layered child windows to run under a Windows 8-aware application manifest. Tauri's default application manifest preserves Common Controls v6 but does not declare Windows compatibility. B1.1 therefore changes only the application manifest: commit `d7da866` preserves Common Controls v6 and adds Windows 8, 8.1, and Windows 10/11 `supportedOS` entries through `tauri_build::WindowsAttributes::app_manifest()`. Windows Bundle `34924195134` built and uploaded NSIS/MSI/portable artifacts successfully. Runtime validation is pending; no native drag logic changed in B1.1.
+The follow-up audit found that the B1 grip uses `WS_CHILD | WS_EX_LAYERED`. Microsoft requires layered child windows to run under a Windows 8-aware application manifest. Tauri's default application manifest preserves Common Controls v6 but does not declare Windows compatibility. B1.1 therefore changes only the application manifest: commit `d7da866` preserves Common Controls v6 and adds Windows 8, 8.1, and Windows 10/11 `supportedOS` entries through `tauri_build::WindowsAttributes::app_manifest()`. Windows Bundle `34924195134` built and uploaded NSIS/MSI/portable artifacts successfully.
+
+B1.1 manual Windows result partially passes but drag acceptance still fails:
+- in-app Minimize → compact: PASS
+- native title-bar minimize → compact: PASS
+- post-drag hover list reopening: PASS
+- native grip drag: FAIL; pause/jump and residual stutter remain
+- hover-list drag-start hide is not directly testable in this PoC because the native grip and WebView hover region are intentionally disjoint
+
+Code audit after this result shows no obvious Port Lens per-move work on the critical path: persistence and taskbar z-order maintenance already defer while the left button is down. The remaining B1 path calls `SendMessageW(parent, WM_NCLBUTTONDOWN, HTCAPTION, ...)` synchronously from the child grip's `WM_LBUTTONDOWN` handler. `SendMessageW` does not return until the target window procedure finishes processing the message, while caption movement enters the Windows move/size modal loop. This creates a nested synchronous modal-loop handoff inside the child WndProc and is now the leading B1-specific suspect. Allow one final control that queues the same parent caption-drag message instead of calling it synchronously. If pause/jump remains, close PoC-B rather than continuing caption/modal-loop tuning.
 
 Hover policy for either PoC: visible hover list should hide at drag start; do not attempt to make the separate hover HWND continuously follow the compact bar during drag.
 

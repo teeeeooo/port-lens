@@ -21,7 +21,8 @@ Isolated branch/worktree: `poc/compact-native-drag-surface` / `/Users/sunjaekim/
 
 Evidence so far:
 - B1 `3d9b12e` / Windows Bundle `34921608950`: package PASS, manual compact entry FAIL at native child-window creation (`CreateWindowExW` returned NULL)
-- B1.1 `d7da866` / Windows Bundle `34924195134`: manifest-only Windows compatibility control; build/package/artifact upload PASS; manual runtime result pending
+- B1.1 `d7da866` / Windows Bundle `34924195134`: manifest-only Windows compatibility control; compact entry PASS from both minimize paths; post-drag hover reopen PASS; native grip drag still FAILS with pause/jump and residual stutter
+- one final B1.2 control is allowed: replace blocking `SendMessageW` parent handoff with queued/asynchronous message delivery while keeping all other variables fixed; if drag still fails, close PoC-B
 
 Initial scope:
 - do not subclass or consume WRY/WebView2 child-window mouse messages

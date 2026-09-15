@@ -58,13 +58,16 @@ PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser 
 - B1 commit `3d9b12e`: Port Lens-owned 34 px native child HWND grip; no WRY/WebView2 child subclassing
 - Windows Bundle `34921608950`: build PASS, but manual compact entry FAIL because `CreateWindowExW` returned NULL
 - B1.1 commit `d7da866`: manifest-only control adding Windows 8/8.1/10+ compatibility while preserving Common Controls v6
-- Windows Bundle `34924195134`: build/package/artifact upload PASS; manual Windows validation pending
+- Windows Bundle `34924195134`: build/package/artifact upload PASS
+- B1.1 manual result: compact entry PASS from both in-app Minimize and native title-bar minimize; post-drag hover reopen PASS
+- B1.1 drag result: **FAIL**; native grip still has visible pause/jump and residual drag stutter
+- hover-list drag-start hide cannot be evaluated in B1 because hover and native grip are intentionally separate hit regions
 
 ## Next action
 
 1. Keep PR #4 open and unmerged as the integration line; PoC-B code stays isolated.
-2. Manually validate B1.1 compact entry first using Bundle `34924195134`: in-app Minimize and native title-bar minimize must both enter compact mode without the `CreateWindowExW` error.
-3. Only if compact entry passes, validate native grip drag smoothness, hover hide/recovery, and `Open` behavior.
-4. Integrate only a Windows-manually-validated mechanism into PR #4.
+2. Audit one final PoC-B control that removes synchronous child-WndProc re-entrancy: queue the parent caption-drag handoff instead of using blocking `SendMessageW`.
+3. If pause/jump remains in that control, close PoC-B; do not keep tuning Windows caption/modal-loop drag.
+4. Only after a substrate passes Windows manual validation should it be integrated into PR #4.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.
