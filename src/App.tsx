@@ -1,5 +1,5 @@
-import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -13,7 +13,8 @@ import {
   getManagedRuntimes,
   killListenerProcess,
   minimizeMainWindow,
-  moveCompactBubble,
+  showCompactHover,
+  hideCompactHover,
   openLogs,
   openManagedAppLogs,
   removeManagedApp,
@@ -26,7 +27,7 @@ import {
 import { isDevMockMode } from "./devMock";
 import SettingsModal from "./SettingsModal";
 import { localizeError, resolveLanguage, t } from "./i18n";
-import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, ManagedStatus } from "./types";
+import type { AppSettings, BubbleState, CompactHoverPayload, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, ManagedStatus } from "./types";
 import "./App.css";
 
 type ManagedRow = ManagedApp & {
@@ -118,6 +119,11 @@ function inferredRuntimeLabel(listener: ListenerInfo) {
   return undefined;
 }
 
+const HOVER_DATA_EVENT = "port-lens://compact-hover-data";
+const HOVER_PRESENCE_EVENT = "port-lens://compact-hover-presence";
+const HOVER_READY_EVENT = "port-lens://compact-hover-ready";
+const HOVER_RENDERED_EVENT = "port-lens://compact-hover-rendered";
+
 function App() {
   const mockParams = isDevMockMode ? new URLSearchParams(window.location.search) : null;
   const mockScreen = mockParams?.get("screen");
@@ -141,18 +147,22 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
+  const bubbleBarInside = useRef(false);
+  const bubblePanelInside = useRef(false);
+  const bubbleHoverVisible = useRef(false);
+  const bubbleHoverOpenTimer = useRef<number | undefined>(undefined);
+  const bubbleHoverCloseTimer = useRef<number | undefined>(undefined);
+  const bubbleHoverSuppressUntilReentry = useRef(false);
+  const bubbleHoverGeneration = useRef(0);
+  const compactHoverRevision = useRef(0);
+  const compactHoverReady = useRef(false);
+  const compactHoverDataRef = useRef<Omit<CompactHoverPayload, "revision">>({ apps: [], bubbleScale: 1 });
+  const compactHoverReadyWaiters = useRef(new Set<() => void>());
+  const compactHoverRenderWaiters = useRef(new Map<number, () => void>());
   const inventoryRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedStateEpoch = useRef(0);
   const monitoredRefreshInFlight = useRef<Promise<void> | null>(null);
-  const bubbleDrag = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    offsetRatioX: number;
-    offsetRatioY: number;
-    moved: boolean;
-  } | null>(null);
   const uiLanguage = resolveLanguage(settings.language);
 
   const refreshInventory = useCallback((silent = false) => {
@@ -275,8 +285,20 @@ function App() {
 
   useEffect(() => {
     document.documentElement.classList.toggle("bubble-mode", bubbleMode);
+    if (!bubbleMode) {
+      bubbleHoverGeneration.current += 1;
+      bubbleBarInside.current = false;
+      bubblePanelInside.current = false;
+      bubbleHoverVisible.current = false;
+      void hideCompactHover().catch(() => undefined);
+    }
     return () => document.documentElement.classList.remove("bubble-mode");
   }, [bubbleMode]);
+
+  useEffect(() => () => {
+    if (bubbleHoverOpenTimer.current !== undefined) window.clearTimeout(bubbleHoverOpenTimer.current);
+    if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
+  }, []);
 
   useEffect(() => {
     if (isDevMockMode) return;
@@ -385,6 +407,20 @@ function App() {
 
   const runningCount = managedRows.filter((row) => row.status === "running" || row.status === "starting").length;
   const onlineAppCount = managedRows.filter((row) => row.listener).length;
+  const compactHoverData = useMemo<Omit<CompactHoverPayload, "revision">>(() => ({
+    apps: managedRows.map((app) => ({
+      id: app.id,
+      name: app.name,
+      online: Boolean(app.listener && !app.identityChanged),
+    })),
+    bubbleScale: settings.bubbleScale,
+  }), [managedRows, settings.bubbleScale]);
+
+  useEffect(() => {
+    compactHoverDataRef.current = compactHoverData;
+    if (isDevMockMode || !compactHoverReady.current) return;
+    void emitTo("compact-hover", HOVER_DATA_EVENT, { ...compactHoverData, revision: 0 } satisfies CompactHoverPayload);
+  }, [compactHoverData]);
 
   const savePreferences = async (patch: Partial<AppSettings>) => {
     try {
@@ -422,6 +458,10 @@ function App() {
 
   const expandBubble = async () => {
     try {
+      bubbleHoverGeneration.current += 1;
+      bubbleBarInside.current = false;
+      bubblePanelInside.current = false;
+      bubbleHoverVisible.current = false;
       const state = await expandFromBubble();
       setBubbleMode(state.collapsed);
     } catch (bubbleError) {
@@ -429,60 +469,181 @@ function App() {
     }
   };
 
-  const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || (event.target as Element).closest("button")) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    bubbleDrag.current = {
-      pointerId: event.pointerId,
-      startX: event.screenX,
-      startY: event.screenY,
-      offsetRatioX: Math.max(0, Math.min(1, (event.clientX - rect.left) / (rect.width || 1))),
-      offsetRatioY: Math.max(0, Math.min(1, (event.clientY - rect.top) / (rect.height || 1))),
-      moved: false,
+  const clearBubbleHoverTimers = () => {
+    if (bubbleHoverOpenTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverOpenTimer.current);
+      bubbleHoverOpenTimer.current = undefined;
+    }
+    if (bubbleHoverCloseTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverCloseTimer.current);
+      bubbleHoverCloseTimer.current = undefined;
+    }
+  };
+
+  const scheduleBubbleHoverClose = () => {
+    if (bubbleHoverCloseTimer.current !== undefined) window.clearTimeout(bubbleHoverCloseTimer.current);
+    bubbleHoverCloseTimer.current = window.setTimeout(() => {
+      bubbleHoverCloseTimer.current = undefined;
+      if (bubbleBarInside.current || bubblePanelInside.current) return;
+      bubbleHoverGeneration.current += 1;
+      bubbleHoverVisible.current = false;
+      void hideCompactHover().catch((bubbleError) => setError(messageOf(bubbleError)));
+    }, 140);
+  };
+
+  const waitForCompactHoverReady = (timeoutMs = 500) => new Promise<boolean>((resolve) => {
+    if (compactHoverReady.current) {
+      resolve(true);
+      return;
+    }
+    let settled = false;
+    const complete = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      compactHoverReadyWaiters.current.delete(complete);
+      resolve(true);
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  };
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      compactHoverReadyWaiters.current.delete(complete);
+      resolve(false);
+    }, timeoutMs);
+    compactHoverReadyWaiters.current.add(complete);
+  });
 
-  const moveBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    const drag = bubbleDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    if (!drag.moved && Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
-    drag.moved = true;
-    event.currentTarget.classList.add("dragging");
-    void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
-      .then((state) => setBubbleMode(state.collapsed))
-      .catch((bubbleError) => setError(messageOf(bubbleError)));
-    event.preventDefault();
-  };
+  const waitForCompactHoverRendered = (revision: number, timeoutMs = 250) => new Promise<boolean>((resolve) => {
+    let settled = false;
+    const complete = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      compactHoverRenderWaiters.current.delete(revision);
+      resolve(true);
+    };
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      compactHoverRenderWaiters.current.delete(revision);
+      resolve(false);
+    }, timeoutMs);
+    compactHoverRenderWaiters.current.set(revision, complete);
+  });
 
-  const finishBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    const drag = bubbleDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    bubbleDrag.current = null;
-    event.currentTarget.classList.remove("dragging");
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-    if (drag.moved) {
-      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
-        .then((state) => setBubbleMode(state.collapsed))
-        .catch((bubbleError) => setError(messageOf(bubbleError)));
-    } else {
-      void expandBubble();
+  useEffect(() => {
+    if (isDevMockMode) return;
+    let active = true;
+    const cleanups: Array<() => void> = [];
+
+    void listen<{ inside: boolean }>(HOVER_PRESENCE_EVENT, (event) => {
+      if (!active) return;
+      bubblePanelInside.current = event.payload.inside;
+      if (event.payload.inside) {
+        if (bubbleHoverCloseTimer.current !== undefined) {
+          window.clearTimeout(bubbleHoverCloseTimer.current);
+          bubbleHoverCloseTimer.current = undefined;
+        }
+      } else if (!bubbleBarInside.current) {
+        scheduleBubbleHoverClose();
+      }
+    }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
+
+    void listen(HOVER_READY_EVENT, () => {
+      if (!active) return;
+      compactHoverReady.current = true;
+      compactHoverReadyWaiters.current.forEach((complete) => complete());
+      void emitTo("compact-hover", HOVER_DATA_EVENT, {
+        ...compactHoverDataRef.current,
+        revision: 0,
+      } satisfies CompactHoverPayload);
+    }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
+
+    void listen<{ revision: number }>(HOVER_RENDERED_EVENT, (event) => {
+      if (!active) return;
+      for (const [revision, complete] of compactHoverRenderWaiters.current) {
+        if (revision <= event.payload.revision) complete();
+      }
+    }).then((unlisten) => active ? cleanups.push(unlisten) : unlisten());
+
+    return () => {
+      active = false;
+      cleanups.forEach((cleanup) => cleanup());
+      compactHoverReadyWaiters.current.forEach((complete) => complete());
+      compactHoverRenderWaiters.current.forEach((complete) => complete());
+    };
+  }, []);
+
+  const beginBubbleHover = () => {
+    bubbleBarInside.current = true;
+    if (bubbleHoverCloseTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverCloseTimer.current);
+      bubbleHoverCloseTimer.current = undefined;
     }
-    event.preventDefault();
+    if (bubbleHoverSuppressUntilReentry.current || bubbleHoverVisible.current || apps.length === 0) return;
+    if (bubbleHoverOpenTimer.current !== undefined) window.clearTimeout(bubbleHoverOpenTimer.current);
+    const generation = ++bubbleHoverGeneration.current;
+    bubbleHoverOpenTimer.current = window.setTimeout(() => {
+      bubbleHoverOpenTimer.current = undefined;
+      void (async () => {
+        if (
+          generation !== bubbleHoverGeneration.current
+          || !bubbleBarInside.current
+          || bubbleHoverSuppressUntilReentry.current
+        ) return;
+
+        await waitForCompactHoverReady();
+        if (
+          generation !== bubbleHoverGeneration.current
+          || !bubbleBarInside.current
+          || bubbleHoverSuppressUntilReentry.current
+        ) return;
+
+        const revision = ++compactHoverRevision.current;
+        const rendered = waitForCompactHoverRendered(revision);
+        await emitTo("compact-hover", HOVER_DATA_EVENT, {
+          ...compactHoverDataRef.current,
+          revision,
+        } satisfies CompactHoverPayload);
+        if (!await rendered) return;
+
+        if (
+          generation !== bubbleHoverGeneration.current
+          || bubbleHoverSuppressUntilReentry.current
+          || (!bubbleBarInside.current && !bubblePanelInside.current)
+        ) return;
+
+        await showCompactHover(compactHoverDataRef.current.apps.length);
+        if (
+          generation !== bubbleHoverGeneration.current
+          || bubbleHoverSuppressUntilReentry.current
+          || (!bubbleBarInside.current && !bubblePanelInside.current)
+        ) {
+          await hideCompactHover();
+          return;
+        }
+        bubbleHoverVisible.current = true;
+      })().catch((bubbleError) => setError(messageOf(bubbleError)));
+    }, 250);
   };
 
-  const cancelBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    const drag = bubbleDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    bubbleDrag.current = null;
-    event.currentTarget.classList.remove("dragging");
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-    if (drag.moved) {
-      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, true)
-        .then((state) => setBubbleMode(state.collapsed))
-        .catch((bubbleError) => setError(messageOf(bubbleError)));
+  const endBubbleHover = () => {
+    bubbleHoverGeneration.current += 1;
+    bubbleBarInside.current = false;
+    if (bubbleHoverSuppressUntilReentry.current) bubbleHoverSuppressUntilReentry.current = false;
+    if (bubbleHoverOpenTimer.current !== undefined) {
+      window.clearTimeout(bubbleHoverOpenTimer.current);
+      bubbleHoverOpenTimer.current = undefined;
     }
+    if (!bubblePanelInside.current) scheduleBubbleHoverClose();
+  };
+
+  const prepareNativeBubbleDrag = () => {
+    clearBubbleHoverTimers();
+    bubbleHoverGeneration.current += 1;
+    bubbleHoverSuppressUntilReentry.current = true;
+    bubblePanelInside.current = false;
+    bubbleHoverVisible.current = false;
   };
 
   const perform = async (
@@ -573,26 +734,32 @@ function App() {
       <main
         className="bubble-shell"
         aria-label="Port Lens compact monitor"
-        title="Drag to move · Click to open"
-        onPointerDown={beginBubbleDrag}
-        onPointerMove={moveBubbleDrag}
-        onPointerUp={finishBubbleDrag}
-        onPointerCancel={cancelBubbleDrag}
+        title="Drag to move · Hover for Apps · Open to expand"
+        onMouseEnter={beginBubbleHover}
+        onMouseLeave={endBubbleHover}
       >
-        <div className="bubble-grip" aria-hidden="true">
-          <img src="/port-lens.svg" alt="" />
+        <div
+          className="bubble-bar"
+          data-tauri-drag-region="deep"
+          onMouseDown={(event) => {
+            if (!(event.target as Element).closest("button")) prepareNativeBubbleDrag();
+          }}
+        >
+          <div className="bubble-grip" aria-hidden="true">
+            <img src="/port-lens.svg" alt="" />
+          </div>
+          <div className="bubble-summary">
+            <span className={`status-dot ${onlineAppCount > 0 ? "running" : "stopped"}`} />
+            <strong>{onlineAppCount}/{apps.length}</strong>
+            <span>apps</span>
+            <span className="bubble-divider" />
+            <strong>{listeners.length}</strong>
+            <span>ports</span>
+          </div>
+          <button className="bubble-expand" onClick={() => void expandBubble()} aria-label="Expand Port Lens" title="Expand">
+            Open
+          </button>
         </div>
-        <div className="bubble-summary">
-          <span className={`status-dot ${onlineAppCount > 0 ? "running" : "stopped"}`} />
-          <strong>{onlineAppCount}/{apps.length}</strong>
-          <span>apps</span>
-          <span className="bubble-divider" />
-          <strong>{listeners.length}</strong>
-          <span>ports</span>
-        </div>
-        <button className="bubble-expand" onClick={() => void expandBubble()} aria-label="Expand Port Lens" title="Expand">
-          Open
-        </button>
       </main>
     );
   }

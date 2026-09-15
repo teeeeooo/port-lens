@@ -1,0 +1,66 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --bubble-scale: 1;
+  --bubble-glass: rgba(48, 52, 56, 0.96);
+  --bubble-line-soft: rgba(232, 238, 244, 0.08);
+  --bubble-text: #eef5fb;
+  --bubble-accent: #b7ead4;
+}
+
+html.compact-hover-mode,
+html.compact-hover-mode body,
+html.compact-hover-mode #root {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.compact-hover-shell {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  padding: calc(7px * var(--bubble-scale));
+  border: 1px solid var(--bubble-line-soft);
+  border-radius: calc(10px * var(--bubble-scale));
+  background: var(--bubble-glass);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(28px) saturate(115%);
+  -webkit-backdrop-filter: blur(28px) saturate(115%);
+  color: var(--bubble-text);
+  scrollbar-width: thin;
+}
+
+.compact-hover-row {
+  height: calc(28px * var(--bubble-scale));
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--bubble-scale));
+  min-width: 0;
+  padding: 0 calc(4px * var(--bubble-scale));
+  font-size: calc(11px * var(--bubble-scale));
+}
+
+.compact-hover-dot {
+  width: calc(8px * var(--bubble-scale));
+  height: calc(8px * var(--bubble-scale));
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #69717c;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.compact-hover-dot.online {
+  background: var(--bubble-accent);
+  box-shadow: 0 0 calc(6px * var(--bubble-scale)) rgba(183, 234, 212, 0.42);
+}
+
+.compact-hover-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bubble-text);
+}

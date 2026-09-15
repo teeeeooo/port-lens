@@ -1,70 +1,98 @@
 # Port Lens Backlog
 
-Last updated: 2026-09-11
+Last updated: 2026-09-15
 
-Items are ordered by intended implementation sequence after the current stability merge.
+Only current actionable/deferred work is kept here. Completed implementation history belongs in `STATE.md` and audit documents.
 
-## 1. Compact position polish
+## 1. Compact drag substrate PoC-A
 
-Status: merged to `main` via PR #2 (`249d111`). Windows CI and bundle packaging passed; implementation is now the baseline.
+Status: **CLOSED / FAILED**.
 
-Goal: allow the Windows compact bubble to sit directly above the taskbar without an artificial gap.
+Evidence:
+- A1 `46409e2` / Windows Bundle `34915796285`: hover micro-stutter, hover list instability, drag pause/jump; persistent cursor/window offset removed
+- control `ac954cd` / Windows Bundle `34917910453`: browser args removed, but drag pause/jump and micro-stutter remain; first hover can open, then hover never returns after any drag
+- no further WebView2 `app-region` timing/flag tuning
 
-Implemented behavior:
-- Port Lens still clamps compact position to monitor `work_area()`.
-- Windows uses a 0 px compact edge margin so the bubble can touch the work-area boundary without covering the taskbar.
-- Non-Windows desktop behavior retains the existing 12 px edge margin.
+## 2. Compact drag substrate PoC-B
 
-Preferred Windows policy:
-- keep the monitor work area as the safe boundary
-- reduce the compact edge margin to 0 px
-- do not allow the bubble to cover the taskbar
+Status: **CLOSED / FAILED**.
 
-Acceptance criteria:
-- bubble can touch the top edge of the taskbar/work-area boundary
-- no taskbar overlap
-- left/right/top clamping remains valid
-- multi-monitor movement remains correct
-- mixed-DPI movement remains correct
-- saved compact position restores and clamps correctly after restart
+Isolated branch/worktree: `poc/compact-native-drag-surface` / `/Users/sunjaekim/Developer/port-lens-poc-b`.
 
-Suggested branch: `feature/compact-position-polish`
+Evidence:
+- B1 `3d9b12e` / Windows Bundle `34921608950`: package PASS, compact entry initially failed because the layered child HWND required a Windows compatibility manifest
+- B1.1 `d7da866` / Windows Bundle `34924195134`: manifest fixed compact entry; native grip drag still paused/jumped and stuttered
+- `c4a821c`: synchronized the separately validated expanded-window size fix into the PoC baseline
+- B1.2 `e20e751` / Windows Bundle `34931769814`: replaced blocking `SendMessageW` with queued `PostMessageW`
+- B1.2 manual result: movement still not immediate; pause/jump remained; cursor/window offset appeared; catch-up jump and residual stutter remained; `Open` after drag stayed PASS
 
-## 2. Verified managed runtime reattach
+Conclusion:
+- synchronous child-WndProc re-entry was not the primary cause
+- close the native-grip → `WM_NCLBUTTONDOWN`/`HTCAPTION` Windows caption/modal-loop approach
+- do not continue with `SC_MOVE`, Send/Post timing variants, or drag-end lifecycle work on this substrate
 
-Status: implemented on `feature/runtime-reattach`; macOS common-path smoke passes. Native macOS/Windows CI and refreshed Windows packaging pass at `afb6d3e`; awaiting only manual Windows restart → Stop/Restart verification before merge.
+## 3. Expanded main-window size drift
 
-Goal: restore safe Stop / Restart control for a server that was started by Port Lens, survived Port Lens exit, and is rediscovered after Port Lens restarts.
+Status: **CLOSED / WINDOWS MANUAL PASS**.
 
-Implemented behavior on the feature branch:
-- new Port Lens starts persist listener PID/name/command plus listener creation time
-- the managed root `cmd.exe` PID, creation time, and command line are persisted
-- after Port Lens restarts, targeted Windows process ancestry is queried only for candidate Apps
-- reattach requires exact listener generation, command identity, persisted root generation, and verified ancestor relationship
-- verified runtimes regain Stop / Restart; ambiguous or stale identities remain non-destructive
-- PID reuse is rejected by persisted process creation-time comparison
-- Stop re-verifies the persisted root generation immediately before terminating a reattached runtime; changed identity revokes Stop authority
-- transient ancestry/CIM or command-line lookup failures are retryable instead of permanently suppressing reattach for the same PID
-- macOS smoke coverage exercises a real Node listener through Start-style spawn, targeted listener discovery, managed-identity persistence/reload, and Stop cleanup
+Root cause and fix:
+- compact collapse and persisted window-state capture used `outer_size()`
+- both restore paths used `set_size()`, which restores the inner/client size and therefore added the Windows frame again on every cycle
+- PR #4 commit `918b377` stores inner/client size for both transient compact restore state and persisted `expandedBounds`
+- legacy outer-size `expandedBounds` are converted once and rewritten with `expandedBoundsAreInner=true`
+- Bundle `34929848061` manual validation passed: repeated compact → `Open`, restart restore, and manual-resize restore stayed stable
 
-Required design constraints:
-- identify the current listener PID for the configured Port
-- verify the persisted managed process identity
-- inspect the Windows parent-process chain and locate the expected Port Lens launch root where possible
-- compare process/command evidence before granting ownership
-- defend against PID reuse and unrelated processes taking the same Port
-- never enable destructive lifecycle actions on ambiguous identity
+## 4. PoC-C Winit compatibility control
 
-Acceptance criteria:
-- verified surviving Port Lens-started Apps become reattached runtimes after restart
-- Stop terminates only the verified managed process tree
-- Restart performs verified Stop followed by the configured Start Command
-- mismatched or ambiguous processes remain Online/Changed without Stop / Restart authority
-- external listeners are never silently adopted
-- tests cover PID reuse/mismatch and successful reattach cases
+Status: **CLOSED / FAILED**.
 
-Suggested branch: `feature/runtime-reattach`
+Deep audit: `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`.
+
+Selected control:
+- Winit 0.30.10 fixed a documented Windows ~500 ms title-bar pause by queuing a dummy `WM_MOUSEMOVE` with `lParam=0` before/while the native move-size loop takes over
+- Port Lens' Tao 0.35.3 still forwards the original non-client lParam; direct source checks show Tao 0.36.0 and 0.37.0 retain the same behavior
+- B1.2 did not test this fix because its parent `WM_NCLBUTTONDOWN` still passed through Tao's old synthetic-mousemove handler
+- PoC-C should reuse the isolated native-grip/B1.2 path and add only an immediately queued `WM_MOUSEMOVE` with `WPARAM(0), LPARAM(0)`; no delays, dependency upgrade, hover-lifecycle change, or persistence change in the same control
+- a PoC-C PASS does **not** authorize restoring production `data-tauri-drag-region` unchanged: Tao `handle_os_dragging()` still has a separate malformed `WM_NCLBUTTONDOWN` coordinate encoding path, so production integration must retain a validated native initiation path or separately validate a Tao coordinate-packing correction
+
+Implementation and runtime evidence:
+- isolated branch/worktree: `poc/compact-winit-wakeup` / `/Users/sunjaekim/Developer/port-lens-poc-c`
+- commit `ee2533a` changes only `src-tauri/src/native_drag.rs` and adds the zero-lParam synthetic `WM_MOUSEMOVE` immediately after the existing correctly packed queued caption handoff
+- local gates: frontend build PASS, fmt PASS, clippy PASS, Rust tests 36/36 PASS, diff check PASS
+- Windows Bundle `34941498309` / full SHA `ee2533a54347b2ed883bcbdd573dc1579d901571`: SUCCESS; portable/MSI/NSIS upload PASS
+- manual Windows result: first movement still not immediate; pause → jump remains; cursor offset became worse; catch-up jump became worse; micro-stutter remains; `Open` remains PASS
+
+Conclusion:
+- the Winit-style zero-lParam wake-up does not fix the Port Lens Tao-managed caption path and materially worsens offset/jump behavior on the tested Windows machine
+- permanently close `WM_NCLBUTTONDOWN` / `HTCAPTION` / `SC_MOVE` / Send-vs-Post / zero-lParam wake-up / `data-tauri-drag-region` tuning for this issue
+- preserve PoC-C branch/worktree as evidence; do not integrate its code into PR #4
+
+## 5. PoC-D non-caption drag audit
+
+Status: **NEXT / AUDIT FIRST**.
+
+History correction: `78c006c` → `cca33ce` already implemented the core Token Lens pattern in Port Lens: pointer capture, 4 px threshold, grab-ratio-only IPC, backend current-cursor resampling, and manual positioning. `cca33ce` Windows Bundle `34802709558` built successfully, while repository docs still showed Windows manual validation pending; no preserved manual FAIL for that final form was found. `7144042` removed it during the separate-hover refactor based on expected IPC/manual-movement risk rather than recorded Windows failure. See `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`.
+
+Audit two candidates before implementation:
+- **D0 — Token Lens exact-style control:** current fixed 276×46 main HWND + separate `compact-hover`; DOM pointer capture and 4 px threshold; repeated lightweight move invoke carries only grab ratio; backend samples current cursor at execution time; Windows movement is position-only; drag-time persistence/z-order work is suppressed.
+- **D1 — native captured-pointer control:** Port Lens-owned native grip; `WM_LBUTTONDOWN` → `SetCapture` and snapshot cursor/parent rect; same-thread `WM_MOUSEMOVE` → position-only `SetWindowPos`; `WM_LBUTTONUP` / `WM_CAPTURECHANGED` terminates and persists/clamps once.
+
+Both avoid `WM_NCLBUTTONDOWN`, `HTCAPTION`, and the Windows move-size modal loop. D0 must not be rejected solely because it uses repeated IPC; current-cursor resampling means it does not simply replay stale frontend coordinates. Compare expected queueing, capture-loss behavior, mixed-DPI/cross-monitor math, topmost/taskbar interaction, WebView2 position notifications, Port Lens `Moved` callbacks, and drag-end persistence before selecting the first PoC-D control.
+
+## 6. PR #4 integration and manual gate
+
+Status: BLOCKED on a passing drag-substrate PoC.
+
+After one drag PoC passes:
+- integrate only the validated drag mechanism into `feature/compact-app-hover`
+- preserve the current hover-window flicker fix and Bundle #26 Open deadlock fix
+- run Windows/macOS CI and Windows packaging
+- manually validate drag, hover-hide-on-drag, Open, taskbar overlap, multi-monitor/mixed-DPI movement, and saved-position restore
+- merge PR #4 only after explicit manual approval
 
 ## Deferred housekeeping
 
-After the two items above stabilize, review version bump/release notes and decide whether the next packaged release remains 0.3.x or advances based on accumulated feature scope.
+After PR #4 stabilizes, review version bump/release notes and prune stale compact-drag experiments from documentation if they are no longer needed for audit history.
+
+Detailed rationale and external references:
+`docs/audits/2026-09-15-compact-drag-hover-audit.md`
