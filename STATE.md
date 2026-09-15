@@ -52,11 +52,19 @@ WRY `0.55.1` already enables WebView2 non-client-region support through `ICoreWe
 
 PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser args as the primary cause. The drag-after-hover failure is also consistent with `prepareNativeBubbleDrag()` setting `bubbleHoverSuppressUntilReentry=true` while WebView2 non-client drag does not reliably deliver the DOM `mouseleave` path that clears it. Do not spend more time patching this failed substrate.
 
+## PoC-B current state
+
+- isolated branch/worktree: `poc/compact-native-drag-surface` / `/Users/sunjaekim/Developer/port-lens-poc-b`
+- B1 commit `3d9b12e`: Port Lens-owned 34 px native child HWND grip; no WRY/WebView2 child subclassing
+- Windows Bundle `34921608950`: build PASS, but manual compact entry FAIL because `CreateWindowExW` returned NULL
+- B1.1 commit `d7da866`: manifest-only control adding Windows 8/8.1/10+ compatibility while preserving Common Controls v6
+- Windows Bundle `34924195134`: build/package/artifact upload PASS; manual Windows validation pending
+
 ## Next action
 
-1. Remove the failed PoC-A worktree/branch after preserving commit SHAs and Windows Bundle evidence in this audit history.
-2. Keep PR #4 open and unmerged as the integration line.
-3. Start PoC-B from this branch in a new isolated branch/worktree: a Port Lens-owned native Win32 drag surface that does not subclass the WRY/WebView2 child HWND.
+1. Keep PR #4 open and unmerged as the integration line; PoC-B code stays isolated.
+2. Manually validate B1.1 compact entry first using Bundle `34924195134`: in-app Minimize and native title-bar minimize must both enter compact mode without the `CreateWindowExW` error.
+3. Only if compact entry passes, validate native grip drag smoothness, hover hide/recovery, and `Open` behavior.
 4. Integrate only a Windows-manually-validated mechanism into PR #4.
 
 Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.

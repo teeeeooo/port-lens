@@ -15,9 +15,13 @@ Evidence:
 
 ## 2. Compact drag substrate PoC-B
 
-Status: **NEXT**.
+Status: **MANUAL VALIDATION**.
 
-Test a Port Lens-owned native Win32 drag surface/hit-test layer from a new isolated branch/worktree based on `feature/compact-app-hover`.
+Isolated branch/worktree: `poc/compact-native-drag-surface` / `/Users/sunjaekim/Developer/port-lens-poc-b`.
+
+Evidence so far:
+- B1 `3d9b12e` / Windows Bundle `34921608950`: package PASS, manual compact entry FAIL at native child-window creation (`CreateWindowExW` returned NULL)
+- B1.1 `d7da866` / Windows Bundle `34924195134`: manifest-only Windows compatibility control; build/package/artifact upload PASS; manual runtime result pending
 
 Initial scope:
 - do not subclass or consume WRY/WebView2 child-window mouse messages

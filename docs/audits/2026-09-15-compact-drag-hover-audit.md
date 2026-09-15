@@ -131,10 +131,14 @@ The browser-args-free control commit `ac954cd` / Windows Bundle `34917910453` bu
 
 This closes PoC-A as **FAILED**. Removing `additionalBrowserArgs` did not resolve the drag defect, so the remaining failure belongs to the WebView2 non-client draggable-region approach in this product context, not to the duplicate feature flag. The post-drag hover lockout is consistent with the current frontend state machine: `prepareNativeBubbleDrag()` sets `bubbleHoverSuppressUntilReentry=true`, while reset depends on the DOM `mouseleave` path in `endBubbleHover()`. Native non-client dragging can bypass that expected DOM sequence. Fixing that secondary state bug would not rescue the failed drag substrate, so no further PoC-A patching is planned.
 
-PoC-B — independent native drag surface, only if PoC-A fails:
+PoC-B — independent native drag surface:
 - do not subclass or consume mouse messages from the WRY/WebView2 child HWND
 - keep the `Open` interactive area outside the native drag surface
 - prove immediate native capture and normal button behavior in a minimal Windows package before integration
+
+B1 commit `3d9b12e` implemented a Port Lens-owned 34 px transparent native child HWND over the left compact grip. Windows Bundle `34921608950` built successfully, but manual compact entry failed before drag testing: both compact-entry routes reached native grip creation, and `CreateWindowExW` returned NULL. The in-app Minimize path surfaced `failed to create native compact drag surface: 작업을 완료했습니다. (0x000000)`; the title-bar minimize path appeared unresponsive because that event path discarded the same collapse error.
+
+The follow-up audit found that the B1 grip uses `WS_CHILD | WS_EX_LAYERED`. Microsoft requires layered child windows to run under a Windows 8-aware application manifest. Tauri's default application manifest preserves Common Controls v6 but does not declare Windows compatibility. B1.1 therefore changes only the application manifest: commit `d7da866` preserves Common Controls v6 and adds Windows 8, 8.1, and Windows 10/11 `supportedOS` entries through `tauri_build::WindowsAttributes::app_manifest()`. Windows Bundle `34924195134` built and uploaded NSIS/MSI/portable artifacts successfully. Runtime validation is pending; no native drag logic changed in B1.1.
 
 Hover policy for either PoC: visible hover list should hide at drag start; do not attempt to make the separate hover HWND continuously follow the compact bar during drag.
 
