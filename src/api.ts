@@ -18,6 +18,9 @@ import {
 } from "./devMock";
 import type { AppSettings, BubbleState, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, SettingsPatch } from "./types";
 
+export const getStartupReady = () =>
+  isDevMockMode ? Promise.resolve(true) : invoke<boolean>("get_startup_ready");
+
 export const getListeners = () =>
   isDevMockMode ? mockGetListeners() : invoke<ListenerInfo[]>("get_listeners");
 
@@ -82,11 +85,17 @@ export const minimizeMainWindow = () =>
     ? Promise.resolve<BubbleState>({ collapsed: true })
     : invoke<BubbleState>("minimize_main_window");
 
-export const moveCompactBubble = (offsetRatioX: number, offsetRatioY: number, persist = false) =>
+export const showCompactHover = (rows: number) =>
+  isDevMockMode ? Promise.resolve() : invoke<void>("show_compact_hover", { rows });
+
+export const hideCompactHover = () =>
+  isDevMockMode ? Promise.resolve() : invoke<void>("hide_compact_hover");
+
+export const moveCompactBubble = (offsetRatioX: number, offsetRatioY: number, hideHover = false) =>
   isDevMockMode
-    ? Promise.resolve(mockBubbleState())
-    : invoke<BubbleState>("move_compact_bubble", {
-        offset: { offsetRatioX, offsetRatioY, persist },
+    ? Promise.resolve()
+    : invoke<void>("move_compact_bubble", {
+        offset: { offsetRatioX, offsetRatioY, hideHover },
       });
 
 export const expandFromBubble = () =>

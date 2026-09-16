@@ -30,6 +30,7 @@ pub struct AppSettings {
     pub bubble_scale: f64,
     pub compact_mode_enabled: bool,
     pub expanded_bounds: Option<WindowBounds>,
+    pub expanded_bounds_are_inner: bool,
     pub compact_position: Option<WindowPosition>,
     // Retained only so settings written by the hotfix preview remain readable.
     pub monitored_ports: Vec<u16>,
@@ -42,6 +43,7 @@ impl Default for AppSettings {
             bubble_scale: 1.0,
             compact_mode_enabled: true,
             expanded_bounds: None,
+            expanded_bounds_are_inner: false,
             compact_position: None,
             monitored_ports: Vec::new(),
         }
@@ -117,10 +119,11 @@ impl SettingsStore {
             .lock()
             .map_err(|_| "Settings state lock is poisoned.".to_owned())?;
         let bounds = normalize_bounds(bounds);
-        if value.expanded_bounds == Some(bounds) {
+        if value.expanded_bounds == Some(bounds) && value.expanded_bounds_are_inner {
             return Ok(());
         }
         value.expanded_bounds = Some(bounds);
+        value.expanded_bounds_are_inner = true;
         self.write_locked(&value)
     }
 
@@ -170,7 +173,7 @@ fn normalize_bounds(mut bounds: WindowBounds) -> WindowBounds {
         bounds.width = 1020.0;
     }
     if !bounds.height.is_finite() {
-        bounds.height = 760.0;
+        bounds.height = 680.0;
     }
     bounds.width = bounds.width.round().max(800.0);
     bounds.height = bounds.height.round().max(580.0);
@@ -226,6 +229,7 @@ mod tests {
                 width: 10.0,
                 height: 900.4,
             }),
+            expanded_bounds_are_inner: true,
             compact_position: Some(WindowPosition { x: 30, y: 40 }),
             monitored_ports: vec![3101, 3000, 3101],
         });
@@ -246,7 +250,17 @@ mod tests {
         assert!(settings.compact_mode_enabled);
         assert_eq!(settings.monitored_ports, vec![3000]);
         assert_eq!(settings.expanded_bounds, None);
+        assert!(!settings.expanded_bounds_are_inner);
         assert_eq!(settings.compact_position, None);
+    }
+
+    #[test]
+    fn legacy_expanded_bounds_default_to_outer_semantics() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"expandedBounds":{"x":10,"y":20,"width":1200,"height":800}}"#)
+                .unwrap();
+        assert!(settings.expanded_bounds.is_some());
+        assert!(!settings.expanded_bounds_are_inner);
     }
 
     #[test]
@@ -285,6 +299,7 @@ mod tests {
         let reloaded = SettingsStore::load(dir.clone(), diagnostics).unwrap();
         let value = reloaded.get().unwrap();
         assert_eq!(value.expanded_bounds.unwrap().x, 100);
+        assert!(value.expanded_bounds_are_inner);
         assert_eq!(value.compact_position.unwrap().x, 1400);
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(log_dir);

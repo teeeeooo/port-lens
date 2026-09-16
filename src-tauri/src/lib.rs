@@ -15,6 +15,7 @@ use process_control::{
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
 use std::process::Child;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
@@ -24,6 +25,16 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
 const EARLY_EXIT_THRESHOLD: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct StartupGate {
+    ready: AtomicBool,
+}
+
+#[tauri::command]
+fn get_startup_ready(gate: State<'_, StartupGate>) -> bool {
+    gate.ready.load(Ordering::Acquire)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MinimizeTarget {
@@ -1212,12 +1223,27 @@ fn minimize_main_window(
 }
 
 #[tauri::command]
+fn show_compact_hover(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+    settings: State<'_, SettingsStore>,
+    rows: u32,
+) -> Result<(), String> {
+    bubble::show_hover_panel(&window, &controller, &settings, rows)
+}
+
+#[tauri::command]
+fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
+    bubble::hide_hover_panel(&window)
+}
+
+#[tauri::command]
 fn move_compact_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
     settings: State<'_, SettingsStore>,
     offset: bubble::BubbleDragOffset,
-) -> Result<bubble::BubblePayload, String> {
+) -> Result<(), String> {
     bubble::move_to_cursor(&window, &controller, &settings, offset)
 }
 
@@ -1225,10 +1251,21 @@ fn move_compact_bubble(
 fn expand_from_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
+    diagnostics: State<'_, Diagnostics>,
 ) -> Result<bubble::BubblePayload, String> {
-    let payload = bubble::expand(&window, &controller, true)?;
-    emit_bubble_state(&window, payload);
-    Ok(payload)
+    diagnostics.record("INFO", "compact_expand", "start");
+    let result = bubble::expand(&window, &controller, true);
+    match result {
+        Ok(payload) => {
+            emit_bubble_state(&window, payload);
+            diagnostics.record("INFO", "compact_expand", "complete");
+            Ok(payload)
+        }
+        Err(error) => {
+            diagnostics.record("ERROR", "compact_expand", format!("error={error}"));
+            Err(error)
+        }
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -1243,6 +1280,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(StartupGate::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -1308,13 +1346,13 @@ pub fn run() {
                 drop(apps);
                 settings_store.clear_legacy_monitored_ports()?;
             }
-            let initial_settings = settings_store.get()?;
             app.manage(app_state);
             app.manage(settings_store);
             app.manage(bubble::BubbleController::default());
             app.manage(window_state::WindowBoundsController::default());
             if let Some(window) = app.get_webview_window("main") {
-                window_state::restore_initial(&window, &initial_settings)?;
+                let settings = app.state::<SettingsStore>();
+                window_state::restore_initial(&window, &settings)?;
             }
 
             let show_item = MenuItem::with_id(app, "show", "Open Port Lens", true, None::<&str>)?;
@@ -1381,6 +1419,9 @@ pub fn run() {
             }
 
             tray_builder.build(app)?;
+            app.state::<StartupGate>()
+                .ready
+                .store(true, Ordering::Release);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1432,6 +1473,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_startup_ready,
             get_listeners,
             get_monitored_listeners,
             get_managed_apps,
@@ -1450,6 +1492,8 @@ pub fn run() {
             get_bubble_state,
             collapse_to_bubble,
             minimize_main_window,
+            show_compact_hover,
+            hide_compact_hover,
             move_compact_bubble,
             expand_from_bubble
         ])

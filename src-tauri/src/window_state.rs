@@ -1,6 +1,6 @@
 use crate::bubble::BubbleController;
-use crate::settings::{AppSettings, SettingsStore, WindowBounds};
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::settings::{SettingsStore, WindowBounds};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{LogicalSize, Manager, Monitor, PhysicalPosition, WebviewWindow};
 
@@ -11,58 +11,167 @@ const PERSIST_DELAY: Duration = Duration::from_millis(400);
 #[derive(Default)]
 pub struct WindowBoundsController {
     generation: AtomicU64,
+    worker_running: AtomicBool,
 }
 
 fn window_error(error: tauri::Error) -> String {
     format!("window state operation failed: {error}")
 }
 
-pub fn restore_initial(window: &WebviewWindow, settings: &AppSettings) -> Result<(), String> {
+fn outer_bounds_to_inner(
+    mut bounds: WindowBounds,
+    frame_width: f64,
+    frame_height: f64,
+) -> WindowBounds {
+    bounds.width = (bounds.width - frame_width).max(MIN_WIDTH);
+    bounds.height = (bounds.height - frame_height).max(MIN_HEIGHT);
+    bounds
+}
+
+fn legacy_outer_bounds_to_inner(
+    window: &WebviewWindow,
+    bounds: WindowBounds,
+) -> Result<WindowBounds, String> {
+    let scale = window.scale_factor().map_err(window_error)?;
+    let outer = window.outer_size().map_err(window_error)?;
+    let inner = window.inner_size().map_err(window_error)?;
+    let frame_width = outer.width.saturating_sub(inner.width) as f64 / scale;
+    let frame_height = outer.height.saturating_sub(inner.height) as f64 / scale;
+    Ok(outer_bounds_to_inner(bounds, frame_width, frame_height))
+}
+
+pub fn restore_initial(window: &WebviewWindow, settings: &SettingsStore) -> Result<(), String> {
     window
         .set_min_size(Some(LogicalSize::new(MIN_WIDTH, MIN_HEIGHT)))
         .map_err(window_error)?;
-    let Some(bounds) = settings.expanded_bounds else {
+    let current_settings = settings.get()?;
+    let mut migrate_legacy_bounds = false;
+    if let Some(saved_bounds) = current_settings.expanded_bounds {
+        let bounds = if current_settings.expanded_bounds_are_inner {
+            saved_bounds
+        } else {
+            migrate_legacy_bounds = true;
+            legacy_outer_bounds_to_inner(window, saved_bounds)?
+        };
+        window
+            .set_size(LogicalSize::new(bounds.width, bounds.height))
+            .map_err(window_error)?;
+        if saved_position_is_visible(window, bounds)? {
+            window
+                .set_position(PhysicalPosition::new(bounds.x, bounds.y))
+                .map_err(window_error)?;
+        }
+    }
+    fit_to_current_work_area(window)?;
+    if migrate_legacy_bounds {
+        if let Some(bounds) = capture_expanded_bounds(window)? {
+            settings.update_expanded_bounds(bounds)?;
+        }
+    }
+    Ok(())
+}
+
+fn fit_to_current_work_area(window: &WebviewWindow) -> Result<(), String> {
+    let Some(monitor) = window.current_monitor().map_err(window_error)? else {
         return Ok(());
     };
+    let work = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let outer = window.outer_size().map_err(window_error)?;
+    let inner = window.inner_size().map_err(window_error)?;
+    let frame_width = outer.width.saturating_sub(inner.width);
+    let frame_height = outer.height.saturating_sub(inner.height);
+    let max_inner_width = work.size.width.saturating_sub(frame_width).max(1);
+    let max_inner_height = work.size.height.saturating_sub(frame_height).max(1);
+    let max_logical =
+        tauri::PhysicalSize::new(max_inner_width, max_inner_height).to_logical::<f64>(scale);
     window
-        .set_size(LogicalSize::new(bounds.width, bounds.height))
+        .set_min_size(Some(LogicalSize::new(
+            MIN_WIDTH.min(max_logical.width),
+            MIN_HEIGHT.min(max_logical.height),
+        )))
         .map_err(window_error)?;
-    if saved_position_is_visible(window, bounds)? {
+    let target_inner_width = inner.width.min(max_inner_width);
+    let target_inner_height = inner.height.min(max_inner_height);
+
+    if target_inner_width != inner.width || target_inner_height != inner.height {
         window
-            .set_position(PhysicalPosition::new(bounds.x, bounds.y))
+            .set_size(
+                tauri::PhysicalSize::new(target_inner_width, target_inner_height)
+                    .to_logical::<f64>(scale),
+            )
             .map_err(window_error)?;
+    }
+
+    let outer = window.outer_size().map_err(window_error)?;
+    let position = window.outer_position().map_err(window_error)?;
+    let min_x = work.position.x as i64;
+    let min_y = work.position.y as i64;
+    let max_x = min_x + work.size.width as i64 - outer.width as i64;
+    let max_y = min_y + work.size.height as i64 - outer.height as i64;
+    let target = PhysicalPosition::new(
+        (position.x as i64).clamp(min_x, max_x.max(min_x)) as i32,
+        (position.y as i64).clamp(min_y, max_y.max(min_y)) as i32,
+    );
+    if target != position {
+        window.set_position(target).map_err(window_error)?;
     }
     Ok(())
 }
 
 pub fn schedule_persist(window: WebviewWindow) {
     let app = window.app_handle().clone();
-    let generation = app
-        .state::<WindowBoundsController>()
-        .generation
-        .fetch_add(1, Ordering::Relaxed)
-        + 1;
+    let controller = app.state::<WindowBoundsController>();
+    controller.generation.fetch_add(1, Ordering::Release);
+    if controller.worker_running.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(PERSIST_DELAY).await;
-        let controller = app.state::<WindowBoundsController>();
-        if controller.generation.load(Ordering::Relaxed) != generation {
-            return;
-        }
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = persist_now(&window);
+        loop {
+            let controller = app.state::<WindowBoundsController>();
+            let observed = controller.generation.load(Ordering::Acquire);
+            tokio::time::sleep(PERSIST_DELAY).await;
+            if controller.generation.load(Ordering::Acquire) != observed {
+                continue;
+            }
+
+            let bubble_controller = app.state::<BubbleController>();
+            let collapsed = crate::bubble::is_collapsed(&bubble_controller).unwrap_or(false);
+            if collapsed && crate::bubble::is_compact_drag_input_active() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+
+            if let Some(window) = app.get_webview_window("main") {
+                if collapsed {
+                    let _ = crate::bubble::hide_hover_panel(&window);
+                }
+                let _ = persist_now(&window);
+            }
+
+            controller.worker_running.store(false, Ordering::Release);
+            if controller.generation.load(Ordering::Acquire) == observed {
+                break;
+            }
+            if controller.worker_running.swap(true, Ordering::AcqRel) {
+                break;
+            }
         }
     });
 }
 
 pub fn persist_now(window: &WebviewWindow) -> Result<(), String> {
     let app = window.app_handle();
-    if crate::bubble::is_collapsed(&app.state::<BubbleController>())? {
-        return Ok(());
+    let controller = app.state::<BubbleController>();
+    let settings = app.state::<SettingsStore>();
+    if crate::bubble::is_collapsed(&controller)? {
+        return crate::bubble::persist_compact_position(window, &controller, &settings);
     }
     let Some(bounds) = capture_expanded_bounds(window)? else {
         return Ok(());
     };
-    app.state::<SettingsStore>().update_expanded_bounds(bounds)
+    settings.update_expanded_bounds(bounds)
 }
 
 fn capture_expanded_bounds(window: &WebviewWindow) -> Result<Option<WindowBounds>, String> {
@@ -73,7 +182,7 @@ fn capture_expanded_bounds(window: &WebviewWindow) -> Result<Option<WindowBounds
     }
     let scale = window.scale_factor().map_err(window_error)?;
     let position = window.outer_position().map_err(window_error)?;
-    let size = window.outer_size().map_err(window_error)?;
+    let size = window.inner_size().map_err(window_error)?;
     let logical = size.to_logical::<f64>(scale);
     if logical.width < MIN_WIDTH || logical.height < MIN_HEIGHT {
         return Ok(None);
@@ -124,5 +233,23 @@ mod tests {
         assert!(rects_intersect((10, 10, 100, 100), (0, 0, 50, 50)));
         assert!(!rects_intersect((50, 0, 100, 100), (0, 0, 50, 50)));
         assert!(!rects_intersect((-100, -100, 20, 20), (0, 0, 50, 50)));
+    }
+
+    #[test]
+    fn legacy_outer_bounds_are_converted_to_inner_size_once() {
+        let migrated = outer_bounds_to_inner(
+            WindowBounds {
+                x: 100,
+                y: 200,
+                width: 1200.0,
+                height: 800.0,
+            },
+            16.0,
+            39.0,
+        );
+        assert_eq!(migrated.width, 1184.0);
+        assert_eq!(migrated.height, 761.0);
+        assert_eq!(migrated.x, 100);
+        assert_eq!(migrated.y, 200);
     }
 }
