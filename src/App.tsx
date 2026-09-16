@@ -676,6 +676,7 @@ function App() {
 
   const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as Element).closest("button")) return;
+    compactDragActive.current = true;
     const rect = event.currentTarget.getBoundingClientRect();
     bubbleDrag.current = {
       pointerId: event.pointerId,
@@ -697,7 +698,6 @@ function App() {
     const firstMove = !drag.moved;
     if (firstMove) {
       drag.moved = true;
-      compactDragActive.current = true;
       const hideHover = bubbleHoverVisible.current || bubblePanelInside.current;
       clearBubbleHoverTimers();
       bubbleHoverGeneration.current += 1;
@@ -731,6 +731,8 @@ function App() {
       void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
         .catch((bubbleError) => setError(messageOf(bubbleError)))
         .finally(resumeCompactPollingAfterDrag);
+    } else {
+      resumeCompactPollingAfterDrag();
     }
     event.preventDefault();
   };

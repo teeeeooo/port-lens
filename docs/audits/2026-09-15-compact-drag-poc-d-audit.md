@@ -189,3 +189,13 @@ Local gates: frontend build PASS, fmt PASS, clippy `-D warnings` PASS, Rust test
 Windows Bundle `35044750834`: SUCCESS. Artifacts: portable `10427100345`, MSI `10426059827`, NSIS `10426790993`.
 
 Windows runtime/manual validation remains pending. Primary gate: compact idle polling must continue to refresh; during an actual drag (>4 px threshold), polling/result application must suspend and jump/catch-up must remain absent; after release/cancel/lost capture, polling must resume and an immediate catch-up refresh must restore current state.
+
+## D0.3 Windows manual result
+
+Windows validation passed the production-shaped drag gate: idle compact polling updates normally; first movement and micro-stutter are acceptable; jump/catch-up and cursor offset are absent; polling resumes after drag; hover-hide and Open pass. One residual cold-start issue remains: after a full process restart, the first compact drag shows one hitch/jump, while all later drags in that process are clean.
+
+## D0.4 cold-start race control
+
+Leading hypothesis: D0.3 raises `compactDragActive` only after the 4 px drag threshold. Initial startup inventory/managed refreshes may still be in flight, and a first-process refresh result can land between `pointerdown` and the first post-threshold movement, causing a React update exactly as the first drag begins. Later drags do not reproduce because those startup refreshes have already settled.
+
+D0.4 changes one variable only: raise the polling/result gate immediately on non-button compact-bar `pointerdown`; keep the 4 px movement threshold unchanged; release the gate on pointerup/cancel/lost capture, with the same catch-up refresh. This preserves normal idle compact monitoring and only broadens the protected interval from active drag to the potential-drag gesture. Runtime validation must determine whether the first-process hitch disappears before this hypothesis is treated as confirmed.
