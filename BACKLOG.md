@@ -69,7 +69,7 @@ Conclusion:
 
 ## 5. PoC-D non-caption drag audit
 
-Status: **NEXT / AUDIT FIRST**.
+Status: **CLOSED / D0.5 ACCEPTED RESIDUAL**.
 
 History correction: `78c006c` → `cca33ce` already implemented the core Token Lens pattern in Port Lens: pointer capture, 4 px threshold, grab-ratio-only IPC, backend current-cursor resampling, and manual positioning. `cca33ce` Windows Bundle `34802709558` built successfully, while repository docs still showed Windows manual validation pending; no preserved manual FAIL for that final form was found. `7144042` removed it during the separate-hover refactor based on expected IPC/manual-movement risk rather than recorded Windows failure. See `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`.
 
@@ -77,13 +77,13 @@ Audit two candidates before implementation:
 - **D0 — Token Lens exact-style control:** current fixed 276×46 main HWND + separate `compact-hover`; DOM pointer capture and 4 px threshold; repeated lightweight move invoke carries only grab ratio; backend samples current cursor at execution time; Windows movement is position-only; drag-time persistence/z-order work is suppressed.
 - **D1 — native captured-pointer control:** Port Lens-owned native grip; `WM_LBUTTONDOWN` → `SetCapture` and snapshot cursor/parent rect; same-thread `WM_MOUSEMOVE` → position-only `SetWindowPos`; `WM_LBUTTONUP` / `WM_CAPTURECHANGED` terminates and persists/clamps once.
 
-Both avoid `WM_NCLBUTTONDOWN`, `HTCAPTION`, and the Windows move-size modal loop. D0 must not be rejected solely because it uses repeated IPC; current-cursor resampling means it does not simply replay stale frontend coordinates. Compare expected queueing, capture-loss behavior, mixed-DPI/cross-monitor math, topmost/taskbar interaction, WebView2 position notifications, Port Lens `Moved` callbacks, and drag-end persistence before selecting the first PoC-D control.
+Audit result: no architectural blocker was found for D0, so D0 was selected before D1. D0 Windows validation on `f474b0d` / Bundle `34946164626` removed the persistent cursor offset and kept hover-hide/Open correct, but jump/catch-up remained. D0.1 changed only raw Windows `SetWindowPos` to Tauri `window.set_position()` and made jump/catch-up worse. D0.2 restored raw position-only `SetWindowPos` and suspended compact polling/UI refresh; Windows validation reported jump/catch-up **completely gone**, proving background refresh/render contention is the decisive variable. D0.3 restored continuous idle compact polling and gated it only during drag; normal drag criteria passed. D0.4 moved the gate to pointerdown but the hitch still appeared randomly on later drags, rejecting the startup-only race hypothesis. D0.5 returned to D0.3 lifecycle and suppressed state setters for unchanged polling snapshots. Final Windows validation still showed an intermittent start hitch/jump on roughly 3 of 10 drag starts, while offset, sustained catch-up, polling, hover-hide, and Open remained correct. This residual is accepted; D1 is deferred as disproportionate in complexity and regression risk.
 
 ## 6. PR #4 integration and manual gate
 
-Status: BLOCKED on a passing drag-substrate PoC.
+Status: **READY FOR FINAL INTEGRATION VALIDATION**.
 
-After one drag PoC passes:
+D0.5 is the accepted production candidate. After integration:
 - integrate only the validated drag mechanism into `feature/compact-app-hover`
 - preserve the current hover-window flicker fix and Bundle #26 Open deadlock fix
 - run Windows/macOS CI and Windows packaging

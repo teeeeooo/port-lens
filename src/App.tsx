@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -13,6 +13,7 @@ import {
   getManagedRuntimes,
   killListenerProcess,
   minimizeMainWindow,
+  moveCompactBubble,
   showCompactHover,
   hideCompactHover,
   openLogs,
@@ -147,6 +148,12 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
+  const compactDragActive = useRef(false);
+  const listenersFingerprint = useRef("[]");
+  const monitoredListenersFingerprint = useRef("[]");
+  const appsFingerprint = useRef("[]");
+  const runtimesFingerprint = useRef("[]");
+  const exitsFingerprint = useRef("[]");
   const bubbleBarInside = useRef(false);
   const bubblePanelInside = useRef(false);
   const bubbleHoverVisible = useRef(false);
@@ -163,20 +170,36 @@ function App() {
   const managedRefreshInFlight = useRef<Promise<void> | null>(null);
   const managedStateEpoch = useRef(0);
   const monitoredRefreshInFlight = useRef<Promise<void> | null>(null);
+  const bubbleDrag = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    offsetRatioX: number;
+    offsetRatioY: number;
+    moved: boolean;
+  } | null>(null);
   const uiLanguage = resolveLanguage(settings.language);
 
   const refreshInventory = useCallback((silent = false) => {
+    if (compactDragActive.current) return Promise.resolve();
     if (inventoryRefreshInFlight.current) return inventoryRefreshInFlight.current;
     if (!silent) setLoading(true);
 
     const task = getListeners()
       .then((nextListeners) => {
-        setListeners(nextListeners);
+        if (compactDragActive.current) return;
+        const fingerprint = JSON.stringify(nextListeners);
+        if (fingerprint !== listenersFingerprint.current) {
+          listenersFingerprint.current = fingerprint;
+          setListeners(nextListeners);
+        }
         setError(null);
       })
-      .catch((refreshError) => setError(messageOf(refreshError)))
+      .catch((refreshError) => {
+        if (!compactDragActive.current) setError(messageOf(refreshError));
+      })
       .finally(() => {
-        if (!silent) setLoading(false);
+        if (!silent && !compactDragActive.current) setLoading(false);
         inventoryRefreshInFlight.current = null;
       });
 
@@ -185,17 +208,32 @@ function App() {
   }, []);
 
   const refreshManagedState = useCallback((force = false) => {
+    if (compactDragActive.current) return Promise.resolve();
     if (!force && managedRefreshInFlight.current) return managedRefreshInFlight.current;
     if (force) managedStateEpoch.current += 1;
     const epoch = managedStateEpoch.current;
     const task = Promise.all([getManagedApps(), getManagedRuntimes(), getManagedExits()])
       .then(([nextApps, nextRuntimes, nextExits]) => {
-        if (epoch !== managedStateEpoch.current) return;
-        setApps(nextApps);
-        setRuntimes(nextRuntimes);
-        setExits(nextExits);
+        if (epoch !== managedStateEpoch.current || compactDragActive.current) return;
+        const nextAppsFingerprint = JSON.stringify(nextApps);
+        if (nextAppsFingerprint !== appsFingerprint.current) {
+          appsFingerprint.current = nextAppsFingerprint;
+          setApps(nextApps);
+        }
+        const nextRuntimesFingerprint = JSON.stringify(nextRuntimes);
+        if (nextRuntimesFingerprint !== runtimesFingerprint.current) {
+          runtimesFingerprint.current = nextRuntimesFingerprint;
+          setRuntimes(nextRuntimes);
+        }
+        const nextExitsFingerprint = JSON.stringify(nextExits);
+        if (nextExitsFingerprint !== exitsFingerprint.current) {
+          exitsFingerprint.current = nextExitsFingerprint;
+          setExits(nextExits);
+        }
       })
-      .catch((refreshError) => setError(messageOf(refreshError)));
+      .catch((refreshError) => {
+        if (!compactDragActive.current) setError(messageOf(refreshError));
+      });
 
     if (!force) {
       managedRefreshInFlight.current = task;
@@ -207,10 +245,20 @@ function App() {
   }, []);
 
   const refreshMonitored = useCallback(() => {
+    if (compactDragActive.current) return Promise.resolve();
     if (monitoredRefreshInFlight.current) return monitoredRefreshInFlight.current;
     const task = getMonitoredListeners()
-      .then((nextListeners) => setMonitoredListeners(nextListeners))
-      .catch((refreshError) => setError(messageOf(refreshError)))
+      .then((nextListeners) => {
+        if (compactDragActive.current) return;
+        const fingerprint = JSON.stringify(nextListeners);
+        if (fingerprint !== monitoredListenersFingerprint.current) {
+          monitoredListenersFingerprint.current = fingerprint;
+          setMonitoredListeners(nextListeners);
+        }
+      })
+      .catch((refreshError) => {
+        if (!compactDragActive.current) setError(messageOf(refreshError));
+      })
       .finally(() => {
         monitoredRefreshInFlight.current = null;
       });
@@ -228,6 +276,18 @@ function App() {
       managedTask,
     ]);
   }, [refreshInventory, refreshManagedState, refreshMonitored]);
+
+  const resumeCompactPollingAfterDrag = useCallback(() => {
+    compactDragActive.current = false;
+    const pending = [
+      inventoryRefreshInFlight.current,
+      monitoredRefreshInFlight.current,
+      managedRefreshInFlight.current,
+    ].filter((task): task is Promise<void> => task !== null);
+    void Promise.allSettled(pending).then(() => {
+      if (!compactDragActive.current) void refreshAll(true, true);
+    });
+  }, [refreshAll]);
 
   useEffect(() => {
     let stopped = false;
@@ -272,6 +332,20 @@ function App() {
       .then(setSettings)
       .catch((settingsError) => setError(messageOf(settingsError)));
   }, []);
+
+  useEffect(() => {
+    listenersFingerprint.current = JSON.stringify(listeners);
+  }, [listeners]);
+
+  useEffect(() => {
+    monitoredListenersFingerprint.current = JSON.stringify(monitoredListeners);
+  }, [monitoredListeners]);
+
+  useEffect(() => {
+    appsFingerprint.current = JSON.stringify(apps);
+    runtimesFingerprint.current = JSON.stringify(runtimes);
+    exitsFingerprint.current = JSON.stringify(exits);
+  }, [apps, exits, runtimes]);
 
   useEffect(() => {
     document.documentElement.lang = uiLanguage;
@@ -580,7 +654,7 @@ function App() {
       window.clearTimeout(bubbleHoverCloseTimer.current);
       bubbleHoverCloseTimer.current = undefined;
     }
-    if (bubbleHoverSuppressUntilReentry.current || bubbleHoverVisible.current || apps.length === 0) return;
+    if (bubbleHoverSuppressUntilReentry.current || bubbleHoverVisible.current || bubbleDrag.current || apps.length === 0) return;
     if (bubbleHoverOpenTimer.current !== undefined) window.clearTimeout(bubbleHoverOpenTimer.current);
     const generation = ++bubbleHoverGeneration.current;
     bubbleHoverOpenTimer.current = window.setTimeout(() => {
@@ -630,7 +704,9 @@ function App() {
   const endBubbleHover = () => {
     bubbleHoverGeneration.current += 1;
     bubbleBarInside.current = false;
-    if (bubbleHoverSuppressUntilReentry.current) bubbleHoverSuppressUntilReentry.current = false;
+    if (bubbleHoverSuppressUntilReentry.current && !bubbleDrag.current) {
+      bubbleHoverSuppressUntilReentry.current = false;
+    }
     if (bubbleHoverOpenTimer.current !== undefined) {
       window.clearTimeout(bubbleHoverOpenTimer.current);
       bubbleHoverOpenTimer.current = undefined;
@@ -638,12 +714,65 @@ function App() {
     if (!bubblePanelInside.current) scheduleBubbleHoverClose();
   };
 
-  const prepareNativeBubbleDrag = () => {
-    clearBubbleHoverTimers();
-    bubbleHoverGeneration.current += 1;
-    bubbleHoverSuppressUntilReentry.current = true;
-    bubblePanelInside.current = false;
-    bubbleHoverVisible.current = false;
+  const beginBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as Element).closest("button")) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    bubbleDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startY: event.screenY,
+      offsetRatioX: Math.max(0, Math.min(1, (event.clientX - rect.left) / (rect.width || 1))),
+      offsetRatioY: Math.max(0, Math.min(1, (event.clientY - rect.top) / (rect.height || 1))),
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+
+  const moveBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved && Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
+
+    const firstMove = !drag.moved;
+    if (firstMove) {
+      drag.moved = true;
+      compactDragActive.current = true;
+      const hideHover = bubbleHoverVisible.current || bubblePanelInside.current;
+      clearBubbleHoverTimers();
+      bubbleHoverGeneration.current += 1;
+      bubbleHoverSuppressUntilReentry.current = true;
+      bubblePanelInside.current = false;
+      bubbleHoverVisible.current = false;
+      event.currentTarget.classList.add("dragging");
+      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY, hideHover)
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    } else {
+      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
+        .catch((bubbleError) => setError(messageOf(bubbleError)));
+    }
+    event.preventDefault();
+  };
+
+  const finishBubbleDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = bubbleDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    bubbleDrag.current = null;
+    event.currentTarget.classList.remove("dragging");
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const inside = event.clientX >= rect.left && event.clientX <= rect.right
+      && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    bubbleBarInside.current = inside;
+    if (!inside) bubbleHoverSuppressUntilReentry.current = false;
+
+    if (drag.moved) {
+      void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
+        .catch((bubbleError) => setError(messageOf(bubbleError)))
+        .finally(resumeCompactPollingAfterDrag);
+    }
+    event.preventDefault();
   };
 
   const perform = async (
@@ -740,10 +869,11 @@ function App() {
       >
         <div
           className="bubble-bar"
-          data-tauri-drag-region="deep"
-          onMouseDown={(event) => {
-            if (!(event.target as Element).closest("button")) prepareNativeBubbleDrag();
-          }}
+          onPointerDown={beginBubbleDrag}
+          onPointerMove={moveBubbleDrag}
+          onPointerUp={finishBubbleDrag}
+          onPointerCancel={finishBubbleDrag}
+          onLostPointerCapture={finishBubbleDrag}
         >
           <div className="bubble-grip" aria-hidden="true">
             <img src="/port-lens.svg" alt="" />

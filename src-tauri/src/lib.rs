@@ -1238,6 +1238,16 @@ fn hide_compact_hover(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn move_compact_bubble(
+    window: WebviewWindow,
+    controller: State<'_, bubble::BubbleController>,
+    settings: State<'_, SettingsStore>,
+    offset: bubble::BubbleDragOffset,
+) -> Result<(), String> {
+    bubble::move_to_cursor(&window, &controller, &settings, offset)
+}
+
+#[tauri::command]
 fn expand_from_bubble(
     window: WebviewWindow,
     controller: State<'_, bubble::BubbleController>,
@@ -1484,6 +1494,7 @@ pub fn run() {
             minimize_main_window,
             show_compact_hover,
             hide_compact_hover,
+            move_compact_bubble,
             expand_from_bubble
         ])
         .run(tauri::generate_context!())
