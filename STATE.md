@@ -34,6 +34,7 @@ Windows artifacts from that integration run: Portable `10430516595`, NSIS `10430
 
 Validated behavior:
 - live TCP listener monitoring and Managed App state refresh
+- external listeners can be registered as persistent monitoring-only Apps
 - Start / Stop / Restart with managed ownership checks
 - verified runtime reattach after Port Lens restart
 - separate `compact-hover` window for registered-app hover content

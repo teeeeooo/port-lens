@@ -32,6 +32,7 @@ Port Lens는 **지금 이 Port를 어떤 process가 사용하고 있고, 그 pro
 - **실시간 Port 탐지** — Windows/macOS에서 TCP LISTEN endpoint를 직접 조회합니다.
 - **Friendly App identity** — 등록 App 이름을 우선 표시하고, 미등록 listener는 command line에서 보수적으로 실행 힌트를 추론합니다. 실제 process 이름과 PID는 그대로 유지합니다.
 - **Managed App 제어** — 신뢰하는 command, working directory, Port를 등록해 Start / Stop / Restart합니다.
+- **기존 listener 등록** — 이미 외부에서 실행 중인 listener를 destructive lifecycle ownership 없이 persistent monitoring-only App으로 등록할 수 있습니다.
 - **검증된 runtime reattach** — Port Lens 재시작 후에도 저장된 process identity가 creation-time 및 root-ancestry 검사를 통과한 기존 Managed Runtime에만 다시 연결합니다.
 - **Port 충돌 표시** — 지정 Port가 이미 사용 중이면 blocker를 임의 종료하지 않고 충돌 상태를 표시합니다.
 - **안전한 unmanaged 종료** — Kill 전 명시적 확인을 받고, 실제 종료 직전에 PID + Port 소유 관계를 다시 검사합니다.
@@ -195,4 +196,4 @@ Port Lens는 독립 구현이며 다음 프로젝트에서 interaction/architect
 
 ## 현재 범위
 
-TCP listener, Managed App, 안전한 process 제어, friendly App identification, responsive UI, tray, 크기 조절 가능한 Compact Bubble, English/한국어 preference, Windows installer/Portable packaging이 구현되어 있습니다. UDP 탐지, HTTP health check, 외부에서 시작된 server의 안전한 adoption은 향후 범위입니다.
+TCP listener, Managed App, 이미 외부에서 실행 중인 listener의 monitoring-only App 등록, verified runtime reattach, 안전한 process 제어, friendly App identification, responsive UI, tray, 크기 조절 가능한 Compact Bubble, English/한국어 preference, Windows installer/Portable packaging이 구현되어 있습니다. UDP 탐지와 HTTP health check는 향후 범위입니다. Lifecycle ownership은 Port Lens가 직접 시작했거나 verified reattach 검사를 통과한 runtime에만 부여합니다.

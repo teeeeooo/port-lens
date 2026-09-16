@@ -33,6 +33,7 @@ The primary runtime target is **Windows 11**. macOS listener discovery is also i
 - **Live port discovery** — enumerate active TCP LISTEN endpoints directly from Windows or macOS.
 - **Friendly app identity** — show a registered app name first; otherwise derive a conservative runtime hint from the process command line while retaining the real executable name and PID.
 - **Managed app controls** — register a trusted command, working directory, and preferred port for one-click Start / Stop / Restart.
+- **Existing-listener registration** — register an already-running external listener as a persistent monitoring-only App without granting destructive lifecycle ownership.
 - **Verified runtime reattach** — after Port Lens restarts, reconnect only to previously managed runtimes whose saved process identity still matches creation-time and root-ancestry checks.
 - **Conflict visibility** — refuse to start a managed app when another process already owns its port instead of silently killing the blocker.
 - **Safe unmanaged termination** — confirm before terminating an unknown listener and re-check the selected PID + port immediately before the kill.
@@ -200,4 +201,4 @@ No source code from those projects is copied into Port Lens; they are interactio
 
 ## Current Scope
 
-TCP listeners, Managed Apps, safe process control, friendly app identification, responsive desktop UI, tray residency, configurable compact bubble mode, English/Korean interface preferences, and Windows installer/portable packaging are implemented. UDP discovery, HTTP health checks, and safe adoption of externally started servers remain future work.
+TCP listeners, Managed Apps, registration of already-running external listeners as monitoring-only Apps, verified runtime reattach, safe process control, friendly app identification, responsive desktop UI, tray residency, configurable compact bubble mode, English/Korean interface preferences, and Windows installer/portable packaging are implemented. UDP discovery and HTTP health checks remain future work. Lifecycle ownership is intentionally limited to Port Lens-started runtimes or runtimes that pass verified reattach checks.

@@ -19,7 +19,8 @@ None. `main` is clean and synchronized with `origin/main`; there are no open PRs
 
 - UDP listener discovery
 - HTTP health checks for registered apps
-- safe adoption of externally started servers into managed ownership
+
+Existing external listeners can already be registered as persistent monitoring-only Apps. Lifecycle ownership is intentionally granted only to Port Lens-started runtimes or runtimes that pass verified reattach checks; silent adoption of arbitrary external processes is not planned work.
 
 ### Compact drag residual
 
