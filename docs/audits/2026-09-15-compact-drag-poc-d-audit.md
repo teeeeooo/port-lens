@@ -132,3 +132,24 @@ Implementation SHA: `850d728bda02e975106db0c51d6913274b7a06af` (`poc: route comp
 Local gates: frontend build PASS, rustfmt PASS, clippy `-D warnings` PASS, Rust tests 36/36 PASS, diff-check PASS.
 
 Windows Bundle `35037312466`: SUCCESS. Artifacts: portable `10423698454`, MSI `10423942712`, NSIS `10423539252`. Windows runtime/manual validation remains pending; this bundle must be judged primarily on whether the jump/catch-up class disappears relative to D0 `f474b0d` / Bundle `34946164626`.
+## D0.1 Windows manual result
+
+Windows manual validation of `850d728` reported:
+- first movement: slightly delayed but acceptable / Token-Lens-like
+- jump/catch-up: still present and worse than D0
+- cursor offset: absent
+- micro-stutter: present but acceptable / Token-Lens-like
+- hover-visible drag hide: PASS
+- Open: PASS
+
+Conclusion: Tauri `window.set_position()` does not explain Token Lens' smoother result. On Port Lens it made the jump/catch-up symptom worse than raw position-only `SetWindowPos`. D0.1 is CLOSED / FAILED.## D0.2 compact-workload isolation control
+
+A same-stack comparison found another material difference: Port Lens continues 3 s monitored/runtime refresh and 10 s inventory refresh in compact mode, while Token Lens refresh cadence is much lower and uses a simpler vanilla-DOM renderer.
+
+D0.2 therefore returns to the better D0 movement primitive (raw Windows position-only `SetWindowPos`) and changes only compact background workload:
+- suspend the 3 s monitored/runtime poll while compact
+- suspend the 10 s inventory poll while compact
+- ignore late results from already in-flight refreshes when compact
+- keep pointer capture, 4 px threshold, grab-ratio-only invoke, backend current-cursor resampling, separate-hover behavior, and final position math unchanged
+
+This is a diagnostic control, not a proposed production policy. If it removes jump/catch-up, subsequent work must restore live compact monitoring with drag-safe/deferred updates instead of permanently freezing compact data. If it fails, renderer/background polling is not sufficient to explain the defect and D1 native captured-pointer positioning becomes the next substrate.

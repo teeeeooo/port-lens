@@ -148,6 +148,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
+  const bubbleModeRef = useRef(bubbleMode);
   const bubbleBarInside = useRef(false);
   const bubblePanelInside = useRef(false);
   const bubbleHoverVisible = useRef(false);
@@ -180,6 +181,7 @@ function App() {
 
     const task = getListeners()
       .then((nextListeners) => {
+        if (bubbleModeRef.current) return;
         setListeners(nextListeners);
         setError(null);
       })
@@ -199,7 +201,7 @@ function App() {
     const epoch = managedStateEpoch.current;
     const task = Promise.all([getManagedApps(), getManagedRuntimes(), getManagedExits()])
       .then(([nextApps, nextRuntimes, nextExits]) => {
-        if (epoch !== managedStateEpoch.current) return;
+        if (epoch !== managedStateEpoch.current || bubbleModeRef.current) return;
         setApps(nextApps);
         setRuntimes(nextRuntimes);
         setExits(nextExits);
@@ -218,7 +220,9 @@ function App() {
   const refreshMonitored = useCallback(() => {
     if (monitoredRefreshInFlight.current) return monitoredRefreshInFlight.current;
     const task = getMonitoredListeners()
-      .then((nextListeners) => setMonitoredListeners(nextListeners))
+      .then((nextListeners) => {
+        if (!bubbleModeRef.current) setMonitoredListeners(nextListeners);
+      })
       .catch((refreshError) => setError(messageOf(refreshError)))
       .finally(() => {
         monitoredRefreshInFlight.current = null;
@@ -239,6 +243,7 @@ function App() {
   }, [refreshInventory, refreshManagedState, refreshMonitored]);
 
   useEffect(() => {
+    if (bubbleMode) return;
     let stopped = false;
     let timer: number | undefined;
     const scheduleNext = () => {
@@ -253,9 +258,10 @@ function App() {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [refreshInventory]);
+  }, [bubbleMode, refreshInventory]);
 
   useEffect(() => {
+    if (bubbleMode) return;
     let stopped = false;
     let timer: number | undefined;
     const refreshFastState = async () => {
@@ -274,7 +280,7 @@ function App() {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [refreshManagedState, refreshMonitored]);
+  }, [bubbleMode, refreshManagedState, refreshMonitored]);
 
   useEffect(() => {
     void getSettings()
@@ -293,6 +299,7 @@ function App() {
   }, [killTarget, listeners, mockScreen]);
 
   useEffect(() => {
+    bubbleModeRef.current = bubbleMode;
     document.documentElement.classList.toggle("bubble-mode", bubbleMode);
     if (!bubbleMode) {
       bubbleHoverGeneration.current += 1;

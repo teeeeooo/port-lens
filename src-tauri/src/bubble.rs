@@ -444,7 +444,20 @@ fn set_compact_position(
     window: &WebviewWindow,
     target: PhysicalPosition<i32>,
 ) -> Result<(), String> {
-    window.set_position(target).map_err(window_error)
+    let hwnd = window.hwnd().map_err(window_error)?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            target.x,
+            target.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .map_err(|error| format!("failed to move compact bubble: {error}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
