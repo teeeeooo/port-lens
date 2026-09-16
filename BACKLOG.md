@@ -10,11 +10,6 @@ None. `main` is clean and synchronized with `origin/main`; there are no open PRs
 
 ## Deferred product work
 
-### Release housekeeping
-
-- decide whether the next public preview should keep `0.3.0` or receive a version bump
-- prepare release notes and publish the corresponding Windows NSIS / MSI / Portable artifacts and checksums when a release is cut
-
 ### Future scope — not scheduled
 
 - UDP listener discovery
@@ -33,6 +28,7 @@ Do not reopen the native D1 capture state machine unless the residual becomes ma
 ## Evidence
 
 - current baseline and accepted limitations: `STATE.md`
+- released stability baseline: `docs/releases/v0.3.1.md`
 - compact drag/hover root audit: `docs/audits/2026-09-15-compact-drag-hover-audit.md`
 - history correction / Token Lens comparison: `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`
 - PoC-C deep audit: `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`

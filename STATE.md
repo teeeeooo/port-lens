@@ -4,31 +4,38 @@ Last updated: 2026-09-16
 
 ## Current baseline
 
-- product: Port Lens `0.3.0` preview, Tauri/Rust + React/TypeScript
+- product: Port Lens `0.3.1` Preview, Tauri/Rust + React/TypeScript
+- release tag: `v0.3.1`
+- release commit: `e32e9a95018e4556e733cb75b53c1a07e597dc49`
+- GitHub Release: **published / pre-release** on 2026-09-16
 - branch: `main` only
-- `main` / `origin/main`: `faf02cce3416e086c59b2a4a12600c68eab21228` (PR #4 merge)
 - open PRs: none
 - extra local/remote branches: none
 - extra worktrees: none
-- working tree: clean
 
 Recent merged milestones:
 - PR #3 — verified managed-runtime reattach and lifecycle hardening
 - PR #4 — compact registered-app hover, expanded-window restore fixes, and final compact drag stabilization
 
-Final integration commit before PR #4 merge: `680d18e9044c174e73c6f806b80f45d1a566eadb`.
+Final Windows runtime-validated integration commit before release: `680d18e9044c174e73c6f806b80f45d1a566eadb`. There are no `src/` or `src-tauri/src/` execution-code changes between that commit and the `v0.3.1` release commit.
 
 ## Validation state
 
-Final PR #4 integration passed:
-- frontend production build
-- rustfmt
-- Clippy with `-D warnings`
+`v0.3.1` release gates:
+- local frontend production build: **PASS**
+- rustfmt: **PASS**
+- Clippy with `-D warnings`: **PASS**
 - Rust tests: **36/36 PASS**
-- GitHub CI: Windows **PASS**, macOS **PASS**
-- Windows Bundle run `35054358897`: **PASS**
+- GitHub CI run `35059809355`: Windows **PASS**, macOS **PASS**
+- Windows Bundle run `35060240844`: **PASS**
+- release assets uploaded: NSIS / MSI / Portable / `SHA256SUMS.txt`
 
-Windows artifacts from that integration run: Portable `10430516595`, NSIS `10430511586`, MSI `10429854175`.
+Release artifact workflow IDs: Portable `10432077432`, NSIS `10432097263`, MSI `10431673891`.
+
+Release SHA-256:
+- NSIS: `742dd65b6658346e917295369dffc02cbac69084080d01737c93b005adf35754`
+- MSI: `1e19e6ddff9c0c964febc4ba7bcd66efce610ed7fef154865ea83863ae1c04ac`
+- Portable: `ea458032b003e312fa7a2d7207fc9e347a948ef5b6ba9dc7b3781bab68ba4992`
 
 ## Runtime status
 
@@ -66,6 +73,7 @@ This residual is accepted for the current preview. The larger Windows-native D1 
 
 ## Evidence map
 
+- release summary: `docs/releases/v0.3.1.md`
 - `docs/audits/2026-09-15-compact-drag-hover-audit.md`
 - `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`
 - `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`
@@ -73,4 +81,4 @@ This residual is accepted for the current preview. The larger Windows-native D1 
 
 ## Next action
 
-There is no active blocker. Use `BACKLOG.md` for deferred product/release work; reopen compact drag only if the accepted residual materially worsens or new evidence changes the risk/reward of D1.
+`v0.3.1` release housekeeping is complete. There is no active blocker. Future product work remains intentionally unscheduled in `BACKLOG.md`; reopen compact drag only if the accepted residual materially worsens or new evidence changes the risk/reward of D1.
