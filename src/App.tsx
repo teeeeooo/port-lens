@@ -148,7 +148,7 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(mockScreen === "settings");
   const [bubbleMode, setBubbleMode] = useState(mockParams?.get("bubble") === "1");
-  const bubbleModeRef = useRef(bubbleMode);
+  const compactDragActive = useRef(false);
   const bubbleBarInside = useRef(false);
   const bubblePanelInside = useRef(false);
   const bubbleHoverVisible = useRef(false);
@@ -176,18 +176,21 @@ function App() {
   const uiLanguage = resolveLanguage(settings.language);
 
   const refreshInventory = useCallback((silent = false) => {
+    if (compactDragActive.current) return Promise.resolve();
     if (inventoryRefreshInFlight.current) return inventoryRefreshInFlight.current;
     if (!silent) setLoading(true);
 
     const task = getListeners()
       .then((nextListeners) => {
-        if (bubbleModeRef.current) return;
+        if (compactDragActive.current) return;
         setListeners(nextListeners);
         setError(null);
       })
-      .catch((refreshError) => setError(messageOf(refreshError)))
+      .catch((refreshError) => {
+        if (!compactDragActive.current) setError(messageOf(refreshError));
+      })
       .finally(() => {
-        if (!silent) setLoading(false);
+        if (!silent && !compactDragActive.current) setLoading(false);
         inventoryRefreshInFlight.current = null;
       });
 
@@ -196,17 +199,20 @@ function App() {
   }, []);
 
   const refreshManagedState = useCallback((force = false) => {
+    if (compactDragActive.current) return Promise.resolve();
     if (!force && managedRefreshInFlight.current) return managedRefreshInFlight.current;
     if (force) managedStateEpoch.current += 1;
     const epoch = managedStateEpoch.current;
     const task = Promise.all([getManagedApps(), getManagedRuntimes(), getManagedExits()])
       .then(([nextApps, nextRuntimes, nextExits]) => {
-        if (epoch !== managedStateEpoch.current || bubbleModeRef.current) return;
+        if (epoch !== managedStateEpoch.current || compactDragActive.current) return;
         setApps(nextApps);
         setRuntimes(nextRuntimes);
         setExits(nextExits);
       })
-      .catch((refreshError) => setError(messageOf(refreshError)));
+      .catch((refreshError) => {
+        if (!compactDragActive.current) setError(messageOf(refreshError));
+      });
 
     if (!force) {
       managedRefreshInFlight.current = task;
@@ -218,12 +224,15 @@ function App() {
   }, []);
 
   const refreshMonitored = useCallback(() => {
+    if (compactDragActive.current) return Promise.resolve();
     if (monitoredRefreshInFlight.current) return monitoredRefreshInFlight.current;
     const task = getMonitoredListeners()
       .then((nextListeners) => {
-        if (!bubbleModeRef.current) setMonitoredListeners(nextListeners);
+        if (!compactDragActive.current) setMonitoredListeners(nextListeners);
       })
-      .catch((refreshError) => setError(messageOf(refreshError)))
+      .catch((refreshError) => {
+        if (!compactDragActive.current) setError(messageOf(refreshError));
+      })
       .finally(() => {
         monitoredRefreshInFlight.current = null;
       });
@@ -242,8 +251,19 @@ function App() {
     ]);
   }, [refreshInventory, refreshManagedState, refreshMonitored]);
 
+  const resumeCompactPollingAfterDrag = useCallback(() => {
+    compactDragActive.current = false;
+    const pending = [
+      inventoryRefreshInFlight.current,
+      monitoredRefreshInFlight.current,
+      managedRefreshInFlight.current,
+    ].filter((task): task is Promise<void> => task !== null);
+    void Promise.allSettled(pending).then(() => {
+      if (!compactDragActive.current) void refreshAll(true, true);
+    });
+  }, [refreshAll]);
+
   useEffect(() => {
-    if (bubbleMode) return;
     let stopped = false;
     let timer: number | undefined;
     const scheduleNext = () => {
@@ -258,10 +278,9 @@ function App() {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [bubbleMode, refreshInventory]);
+  }, [refreshInventory]);
 
   useEffect(() => {
-    if (bubbleMode) return;
     let stopped = false;
     let timer: number | undefined;
     const refreshFastState = async () => {
@@ -280,7 +299,7 @@ function App() {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [bubbleMode, refreshManagedState, refreshMonitored]);
+  }, [refreshManagedState, refreshMonitored]);
 
   useEffect(() => {
     void getSettings()
@@ -299,7 +318,6 @@ function App() {
   }, [killTarget, listeners, mockScreen]);
 
   useEffect(() => {
-    bubbleModeRef.current = bubbleMode;
     document.documentElement.classList.toggle("bubble-mode", bubbleMode);
     if (!bubbleMode) {
       bubbleHoverGeneration.current += 1;
@@ -679,6 +697,7 @@ function App() {
     const firstMove = !drag.moved;
     if (firstMove) {
       drag.moved = true;
+      compactDragActive.current = true;
       const hideHover = bubbleHoverVisible.current || bubblePanelInside.current;
       clearBubbleHoverTimers();
       bubbleHoverGeneration.current += 1;
@@ -710,7 +729,8 @@ function App() {
 
     if (drag.moved) {
       void moveCompactBubble(drag.offsetRatioX, drag.offsetRatioY)
-        .catch((bubbleError) => setError(messageOf(bubbleError)));
+        .catch((bubbleError) => setError(messageOf(bubbleError)))
+        .finally(resumeCompactPollingAfterDrag);
     }
     event.preventDefault();
   };
@@ -813,6 +833,7 @@ function App() {
           onPointerMove={moveBubbleDrag}
           onPointerUp={finishBubbleDrag}
           onPointerCancel={finishBubbleDrag}
+          onLostPointerCapture={finishBubbleDrag}
         >
           <div className="bubble-grip" aria-hidden="true">
             <img src="/port-lens.svg" alt="" />

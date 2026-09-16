@@ -69,7 +69,7 @@ Conclusion:
 
 ## 5. PoC-D non-caption drag audit
 
-Status: **D0 FAILED / D0.1 FAILED / D0.2 IMPLEMENTED, WINDOWS MANUAL VALIDATION PENDING**.
+Status: **D0 FAILED / D0.1 FAILED / D0.2 DIAGNOSTIC PASS / D0.3 IMPLEMENTED, WINDOWS MANUAL VALIDATION PENDING**.
 
 History correction: `78c006c` → `cca33ce` already implemented the core Token Lens pattern in Port Lens: pointer capture, 4 px threshold, grab-ratio-only IPC, backend current-cursor resampling, and manual positioning. `cca33ce` Windows Bundle `34802709558` built successfully, while repository docs still showed Windows manual validation pending; no preserved manual FAIL for that final form was found. `7144042` removed it during the separate-hover refactor based on expected IPC/manual-movement risk rather than recorded Windows failure. See `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`.
 
@@ -77,7 +77,7 @@ Audit two candidates before implementation:
 - **D0 — Token Lens exact-style control:** current fixed 276×46 main HWND + separate `compact-hover`; DOM pointer capture and 4 px threshold; repeated lightweight move invoke carries only grab ratio; backend samples current cursor at execution time; Windows movement is position-only; drag-time persistence/z-order work is suppressed.
 - **D1 — native captured-pointer control:** Port Lens-owned native grip; `WM_LBUTTONDOWN` → `SetCapture` and snapshot cursor/parent rect; same-thread `WM_MOUSEMOVE` → position-only `SetWindowPos`; `WM_LBUTTONUP` / `WM_CAPTURECHANGED` terminates and persists/clamps once.
 
-Audit result: no architectural blocker was found for D0, so D0 was selected before D1. D0 Windows validation on `f474b0d` / Bundle `34946164626` removed the persistent cursor offset and kept hover-hide/Open correct, but jump/catch-up remained. D0.1 then changed only raw Windows `SetWindowPos` to Tauri `window.set_position()`; Windows manual validation made jump/catch-up worse, so D0.1 also failed. D0.2 restores raw position-only `SetWindowPos` and isolates a remaining Port-Lens-specific variable by suspending compact-mode 3 s/10 s polling and ignoring late in-flight refresh UI updates. If D0.2 still jumps, proceed to D1 rather than further tuning the JS→IPC manual-position family.
+Audit result: no architectural blocker was found for D0, so D0 was selected before D1. D0 Windows validation on `f474b0d` / Bundle `34946164626` removed the persistent cursor offset and kept hover-hide/Open correct, but jump/catch-up remained. D0.1 changed only raw Windows `SetWindowPos` to Tauri `window.set_position()` and made jump/catch-up worse. D0.2 restored raw position-only `SetWindowPos` and suspended compact polling/UI refresh; Windows validation reported jump/catch-up **completely gone**, proving background refresh/render contention is the decisive variable. D0.3 is the production-shaped control: normal compact polling remains active while idle, polling/result application is gated only during a real drag, and pointerup/cancel/lost-capture performs one catch-up refresh after the final move. D1 is deferred unless D0.3 reintroduces the blocker.
 
 ## 6. PR #4 integration and manual gate
 

@@ -161,3 +161,21 @@ Local gates: frontend build PASS, fmt PASS, clippy `-D warnings` PASS, Rust test
 Windows Bundle `35040462376`: SUCCESS. Artifacts: portable `10425132792`, MSI `10424689681`, NSIS `10425605338`.
 
 Windows runtime/manual validation remains pending. PR #4 remains separate, OPEN, CLEAN, and unmerged.
+## D0.2 Windows manual result
+
+Windows manual validation of `b7f936f` / Bundle `35040462376` reported that the jump/catch-up symptom disappeared completely. This is the first PoC-D control to eliminate the primary drag blocker. The result strongly implicates compact-mode background refresh / renderer update contention rather than the pointer-capture/manual-position substrate itself.
+
+D0.2 is therefore a diagnostic PASS, not the production policy: permanently disabling compact polling would defeat Port Lens' continuous-monitoring purpose.
+
+## D0.3 production-shape control
+
+D0.3 restores normal 3 s monitored/runtime polling and 10 s inventory polling whenever compact drag is idle. Polling is suspended only after the 4 px threshold marks a real drag as active. Poll ticks during drag do not start backend refresh work, and refreshes that started before drag may finish but their results/errors are not applied to React state while the drag gate is active.
+On `pointerup`, `pointercancel`, or `lostpointercapture`, the final compact move is allowed to finish first. The drag gate is then released, any pre-drag in-flight refresh promises are allowed to settle, and Port Lens immediately performs one catch-up refresh before continuing the normal polling cadence.
+
+This keeps compact monitoring live outside the actual drag interval while preserving the workload isolation proven by D0.2. No React state is used to represent drag-active state; refs are used so entering/leaving drag does not itself trigger a render.
+
+D0.3 acceptance gate:
+- normal compact counts continue to refresh while idle
+- during continuous 10–20 s drag, no jump/catch-up returns even as normal polling deadlines pass
+- after release, values catch up without requiring Open/restart
+- cursor offset remains absent; hover-hide and Open remain PASS
