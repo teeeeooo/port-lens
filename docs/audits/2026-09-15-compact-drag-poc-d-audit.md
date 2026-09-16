@@ -152,4 +152,12 @@ D0.2 therefore returns to the better D0 movement primitive (raw Windows position
 - ignore late results from already in-flight refreshes when compact
 - keep pointer capture, 4 px threshold, grab-ratio-only invoke, backend current-cursor resampling, separate-hover behavior, and final position math unchanged
 
-This is a diagnostic control, not a proposed production policy. If it removes jump/catch-up, subsequent work must restore live compact monitoring with drag-safe/deferred updates instead of permanently freezing compact data. If it fails, renderer/background polling is not sufficient to explain the defect and D1 native captured-pointer positioning becomes the next substrate.
+This is a diagnostic control, not a proposed production policy. If it removes jump/catch-up, subsequent work must restore live compact monitoring with drag-safe/deferred updates instead of permanently freezing compact data. If it fails, renderer/background polling is not sufficient to explain the defect and D1 native captured-pointer positioning becomes the next substrate.## D0.2 build evidence
+
+Implementation commit: `b7f936f231e50cb7995b0f992c8a1e762971a94a` (`poc: isolate compact drag workload`).
+
+Local gates: frontend build PASS, fmt PASS, clippy `-D warnings` PASS, Rust tests 36/36 PASS, diff check PASS.
+
+Windows Bundle `35040462376`: SUCCESS. Artifacts: portable `10425132792`, MSI `10424689681`, NSIS `10425605338`.
+
+Windows runtime/manual validation remains pending. PR #4 remains separate, OPEN, CLEAN, and unmerged.
