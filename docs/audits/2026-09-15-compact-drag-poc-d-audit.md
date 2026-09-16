@@ -179,3 +179,13 @@ D0.3 acceptance gate:
 - during continuous 10–20 s drag, no jump/catch-up returns even as normal polling deadlines pass
 - after release, values catch up without requiring Open/restart
 - cursor offset remains absent; hover-hide and Open remain PASS
+
+## D0.3 build evidence
+
+Implementation commit: `01cfe4d33889385dc761d08ed466ceeb0d1a7185` (`poc: suspend compact polling only during drag`).
+
+Local gates: frontend build PASS, fmt PASS, clippy `-D warnings` PASS, Rust tests 36/36 PASS, diff check PASS.
+
+Windows Bundle `35044750834`: SUCCESS. Artifacts: portable `10427100345`, MSI `10426059827`, NSIS `10426790993`.
+
+Windows runtime/manual validation remains pending. Primary gate: compact idle polling must continue to refresh; during an actual drag (>4 px threshold), polling/result application must suspend and jump/catch-up must remain absent; after release/cancel/lost capture, polling must resume and an immediate catch-up refresh must restore current state.
