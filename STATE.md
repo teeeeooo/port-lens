@@ -1,104 +1,75 @@
 # Port Lens State
 
-Last updated: 2026-09-15
+Last updated: 2026-09-16
 
 ## Current baseline
 
-- product: Port Lens v0.3.0 preview, Tauri/Rust + React/TypeScript
-- merged `main`: `bee52e3` (PR #3 runtime reattach/lifecycle hardening)
-- active branch: `feature/compact-app-hover`
-- PR #4: OPEN, targets `main`, **do not merge yet**
-- Windows-tested code baseline: `43d4c15645c763d1dc9fc5caa20b81cf3802b0c0`
-- Windows Bundle #26: run `34911753874`
+- product: Port Lens `0.3.0` preview, Tauri/Rust + React/TypeScript
+- branch: `main` only
+- `main` / `origin/main`: `faf02cce3416e086c59b2a4a12600c68eab21228` (PR #4 merge)
+- open PRs: none
+- extra local/remote branches: none
+- extra worktrees: none
+- working tree: clean
 
-Detailed compact drag/hover evidence and references:
+Recent merged milestones:
+- PR #3 — verified managed-runtime reattach and lifecycle hardening
+- PR #4 — compact registered-app hover, expanded-window restore fixes, and final compact drag stabilization
+
+Final integration commit before PR #4 merge: `680d18e9044c174e73c6f806b80f45d1a566eadb`.
+
+## Validation state
+
+Final PR #4 integration passed:
+- frontend production build
+- rustfmt
+- Clippy with `-D warnings`
+- Rust tests: **36/36 PASS**
+- GitHub CI: Windows **PASS**, macOS **PASS**
+- Windows Bundle run `35054358897`: **PASS**
+
+Windows artifacts from that integration run: Portable `10430516595`, NSIS `10430511586`, MSI `10429854175`.
+
+## Runtime status
+
+Validated behavior:
+- live TCP listener monitoring and Managed App state refresh
+- Start / Stop / Restart with managed ownership checks
+- verified runtime reattach after Port Lens restart
+- separate `compact-hover` window for registered-app hover content
+- compact `Open` restores the expanded window without the previous size-growth drift
+- compact polling remains active while idle and resumes with catch-up refresh after drag
+- hover is hidden at actual drag start rather than continuously tracked across windows
+- taskbar overlap/topmost behavior, saved compact position, mixed-DPI/multi-monitor handling, startup gating, and compact clipping are preserved
+
+### Accepted compact-drag residual
+
+The drag issue is **CLOSED / ACCEPTED RESIDUAL** at the D0.5 quality level.
+
+On the tested Windows machine, roughly 3 of 10 drag starts can show one short hitch/jump when monitoring/render work overlaps drag initiation. Once movement is underway:
+- no persistent cursor/window offset
+- no sustained pause/catch-up jump
+- micro-stutter is acceptable
+- idle polling and drag-end polling resume correctly
+- hover-visible drag → hide is correct
+- `Open` remains correct
+
+This residual is accepted for the current preview. The larger Windows-native D1 `SetCapture` state machine is deferred because its lifecycle/regression cost is disproportionate to the remaining symptom.
+
+## Guardrails
+
+- do not reopen `WM_NCLBUTTONDOWN` / `HTCAPTION` / `SC_MOVE` / Send-vs-Post / zero-lParam wake-up / `data-tauri-drag-region` tuning for the closed drag issue without new evidence
+- keep compact monitoring live; disabling polling for the entire compact state is not acceptable product behavior
+- preserve the separate hover-window architecture and the compact `Open` deadlock/restore fixes
+- preserve PR #3 runtime identity, creation-time, ancestry, and lifecycle-suppression checks
+
+## Evidence map
+
 - `docs/audits/2026-09-15-compact-drag-hover-audit.md`
-- `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`
 - `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`
-
-## Windows manual state
-
-- compact hover flicker: PASS after split into dedicated `compact-hover` window
-- compact `Open` → expanded main UI: PASS on Bundle #26
-- compact drag: FAIL; native drag can start late after cursor movement and then retain a fixed cursor/window offset
-- hover-visible drag: FAIL UX; separate hover window remains at its previous screen position while the compact bar moves
-- compact bottom rounding: PASS
-- startup `state not managed` race: PASS
-- main window initial/work-area sizing: PASS
-
-The remaining drag issue persists after Port Lens removed mouse-down hover IPC, per-move hover hiding, drag-time persistence, and drag-time z-order work. Current evidence points to the Tauri/Tao Windows drag substrate rather than the App hover scan/render path.
-
-## Active constraints
-
-- Do not patch the current `data-tauri-drag-region` path further before substrate PoCs.
-- Do not reintroduce Bundle #24 WRY/WebView2 child HWND subclassing.
-- Preserve the Bundle #26 compact expansion deadlock fix.
-- Preserve the separate hover-window architecture unless a safer replacement is proven; it solved the original flicker.
-- On drag start, the intended hover policy is `hide`, not continuous cross-window tracking.
-- Preserve taskbar overlap/topmost behavior, saved-position restore, mixed-DPI/multi-monitor behavior, startup gating, and compact clipping.
-- Preserve PR #3 runtime reattach identity/suppression logic unchanged.
-
-## PoC-A manual result
-
-- PoC-A1 branch/worktree: `poc/compact-webview2-drag-regions` / `/Users/sunjaekim/Developer/port-lens-poc-a`
-- PoC-A1 commit: `46409e2`
-- Windows Bundle run: `34915796285` (build PASS)
-- manual result: FAIL overall
-  - hover can cause a brief compact freeze / micro-stutter
-  - hover list usually does not open; it appears only intermittently
-  - drag still pauses and then jumps/catches up
-  - previous persistent cursor/window offset after snap is no longer reproduced
-  - if hover list is visible when drag begins, the list remains at its old position while `main` moves; it disappears after drag release
-
-WRY `0.55.1` already enables WebView2 non-client-region support through `ICoreWebView2Settings9`, so `additionalBrowserArgs` is not required for `app-region`. The browser-args-free control `ac954cd` / Windows Bundle `34917910453` also failed manual acceptance: the first hover popup could open, but after any drag the hover popup never returned; drag still paused/jumped and retained visible micro-stutter.
-
-PoC-A is therefore **CLOSED / FAILED**. The control rules out redundant browser args as the primary cause. The drag-after-hover failure is also consistent with `prepareNativeBubbleDrag()` setting `bubbleHoverSuppressUntilReentry=true` while WebView2 non-client drag does not reliably deliver the DOM `mouseleave` path that clears it. Do not spend more time patching this failed substrate.
-
-## PoC-B manual result
-
-- isolated branch/worktree: `poc/compact-native-drag-surface` / `/Users/sunjaekim/Developer/port-lens-poc-b`
-- B1 `3d9b12e` / Bundle `34921608950`: build PASS, compact entry FAIL because layered child HWND creation failed without a compatibility manifest
-- B1.1 `d7da866` / Bundle `34924195134`: manifest control fixed compact entry, but native grip drag still paused/jumped and stuttered
-- validated size-drift fix synchronized into PoC-B as `c4a821c`
-- B1.2 `e20e751` / Bundle `34931769814`: replaced blocking `SendMessageW` with queued `PostMessageW` while keeping the native grip/caption-drag architecture otherwise fixed
-- B1.2 manual result: **FAIL**
-  - movement is not immediate after mouse-down
-  - pause → jump remains
-  - cursor/window offset appears
-  - catch-up jump remains during/release-side movement
-  - residual drag stutter remains
-  - `Open` after drag remains PASS
-
-PoC-B is therefore **CLOSED / FAILED**. The B1.2 control rules out synchronous child-WndProc re-entry as the primary cause. Generic `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, or Send/Post timing tuning remains closed. A later PoC-C deep audit found one evidence-backed exception: Winit 0.30.10 fixed the Windows ~500 ms title-bar pause by posting a synthetic `WM_MOUSEMOVE` with `lParam=0`, while Tao 0.35.3/0.36.0/0.37.0 still forward the original non-client lParam. That exact compatibility control is the only caption-loop experiment reopened.
-
-## Expanded-window size drift
-
-A separate lifecycle bug was found while repeatedly testing compact → `Open`: the expanded main window grows wider on each cycle. Root cause is an outer/inner size mismatch that predates PoC-B and has existed since compact mode was introduced in `bed908d`.
-
-- compact collapse saved `outer_size()` but expand restored it through `set_size()`, which sets the inner/client size
-- persisted `expandedBounds` had the same mismatch: `outer_size()` was stored and later restored through `set_size()`
-- production fix on PR #4 standardizes both transient and persisted expanded dimensions on inner/client size
-- legacy preview settings are marked with `expandedBoundsAreInner`; old settings without the marker are converted once by subtracting the current non-client frame and then rewritten using inner-size semantics
-- Windows manual gate: **PASS** on commit `918b377` / Bundle `34929848061`; compact → `Open` repetition, restart restore, and manual-resize restore were reported stable
-
-## Historical drag audit correction
-
-Git history shows that Port Lens already used a Token-Lens-like drag path in `78c006c` through `cca33ce`: DOM pointer capture, a 4 px threshold, repeated lightweight move invokes, backend `cursor_position()` resampling, grab-ratio preservation, and Windows position-only `SetWindowPos`. The final `cca33ce` form built successfully as Windows Bundle `34802709558`, but repository evidence does not preserve a Windows manual FAIL for that form; its docs still described manual validation as pending.
-
-`7144042` removed that path while simultaneously splitting hover into the current dedicated `compact-hover` window. The recorded rationale was to remove repeated pointermove IPC/cursor polling/manual movement in favor of OS-owned native drag, not a documented runtime failure of `cca33ce`. The 2026-09-15 reference audit later explicitly examined Token Lens but excluded its approach based on predicted IPC/backlog risk. That exclusion was too categorical: backend current-cursor resampling materially limits stale-coordinate replay, and the present fixed-main-window + separate-hover architecture has never been tested with the modern Token Lens pattern.
+- `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`
+- `docs/audits/2026-09-15-compact-drag-poc-d-audit.md`
 
 ## Next action
 
-1. Keep PR #4 open and unmerged; production drag behavior remains unresolved.
-2. PoC-C is **CLOSED / FAILED**. Build validation passed, but Windows manual validation on `ee2533a` / Bundle `34941498309` still showed delayed first movement, pause → jump, worse cursor offset/catch-up jump, and micro-stutter; `Open` remained normal.
-3. Caption/modal-loop drag is permanently closed for this issue: no further `WM_NCLBUTTONDOWN`, `HTCAPTION`, `SC_MOVE`, Send/Post timing, zero-lParam wake-up, or `data-tauri-drag-region` tuning.
-4. PoC-D audit found no architectural blocker for **D0** and selected it ahead of D1. Isolated branch/worktree: `poc/compact-token-lens-drag` / `/Users/sunjaekim/Developer/port-lens-poc-d`; detailed audit: `docs/audits/2026-09-15-compact-drag-poc-d-audit.md`.
-5. D0 Windows manual result on `f474b0d` / Bundle `34946164626`: first movement and micro-stutter were Token-Lens-like/acceptable, cursor offset was gone, hover-hide and `Open` passed, but jump/catch-up remained. Therefore D0 does **not** pass the primary drag gate.
-6. D0.1 changed only the Windows drag-time movement primitive from raw `SetWindowPos` to Tauri `window.set_position()`. Windows manual validation reported the same acceptable initial delay/stutter and no cursor offset, but jump/catch-up became **worse**. D0.1 is **CLOSED / FAILED**.
-7. **D0.2 diagnostic PASS:** Windows manual validation on `b7f936f` / Bundle `35040462376` reported that jump/catch-up disappeared completely. This strongly isolates compact background polling / renderer updates as the blocker. Permanent compact polling disable is rejected because compact mode exists for continuous monitoring.
-8. **D0.3 runtime PASS with one cold-start residual:** Windows validation on `01cfe4d` / Bundle `35044750834` passed idle polling, normal drag, no jump/catch-up, no cursor offset, acceptable micro-stutter, polling resume, hover-hide, and Open. One issue remains: after a full process restart, the first compact drag alone shows one hitch/jump; every later drag in the same process is clean.
-9. **D0.4 rejected:** moving the polling gate to pointerdown did not remove the residual hitch; Windows validation showed the start hitch/jump could occur randomly on the first, second, third, fourth, or later drag. This rejects the startup-only refresh race hypothesis.
-10. **D0.5 ACCEPTED WITH RESIDUAL:** Windows manual validation found the remaining first-movement hitch/jump on roughly 3 of 10 drag starts. Cursor offset is absent; sustained jump/catch-up is absent once drag is underway; first movement and micro-stutter are otherwise acceptable; idle polling, drag-end polling resume, hover-hide, and Open remain correct. Unchanged-snapshot render suppression did not eliminate the residual collision, so this is accepted as an occasional polling/renderer-contention limitation. D1 is explicitly deferred because its native capture state machine is disproportionate to the remaining symptom and carries larger lifecycle/regression risk.
-11. Drag issue is **CLOSED / ACCEPTED RESIDUAL** at D0.5 quality. Integrate the validated D0.5 final tree into PR #4, preserve the size-drift fix, hover-window architecture, Open deadlock fix, taskbar behavior, mixed-DPI/multi-monitor handling, startup gating, and PR #3 lifecycle protections, then run final CI/package validation. Do not merge PR #4 without explicit approval.
-
-Before any new work, verify git/PR state against the repository; do not assume this file alone proves merge or CI state.
+There is no active blocker. Use `BACKLOG.md` for deferred product/release work; reopen compact drag only if the accepted residual materially worsens or new evidence changes the risk/reward of D1.

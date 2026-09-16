@@ -32,9 +32,10 @@ Port Lens는 **지금 이 Port를 어떤 process가 사용하고 있고, 그 pro
 - **실시간 Port 탐지** — Windows/macOS에서 TCP LISTEN endpoint를 직접 조회합니다.
 - **Friendly App identity** — 등록 App 이름을 우선 표시하고, 미등록 listener는 command line에서 보수적으로 실행 힌트를 추론합니다. 실제 process 이름과 PID는 그대로 유지합니다.
 - **Managed App 제어** — 신뢰하는 command, working directory, Port를 등록해 Start / Stop / Restart합니다.
+- **검증된 runtime reattach** — Port Lens 재시작 후에도 저장된 process identity가 creation-time 및 root-ancestry 검사를 통과한 기존 Managed Runtime에만 다시 연결합니다.
 - **Port 충돌 표시** — 지정 Port가 이미 사용 중이면 blocker를 임의 종료하지 않고 충돌 상태를 표시합니다.
 - **안전한 unmanaged 종료** — Kill 전 명시적 확인을 받고, 실제 종료 직전에 PID + Port 소유 관계를 다시 검사합니다.
-- **Compact bubble** — `running apps / listening ports`를 always-on-top bubble로 표시하고 70%~150% 크기를 선택할 수 있습니다.
+- **Compact bubble** — `running apps / listening ports`를 always-on-top bubble로 표시하고, hover 시 별도 compact panel에서 등록 App 목록을 확인하며, 70%~150% 크기를 선택할 수 있습니다.
 - **Language 설정** — System / English / 한국어를 지원하며 App, Port, Process 같은 기술 label은 영어로 유지합니다.
 - **Native tray** — dashboard 열기, bubble 표시, Refresh, Quit을 system tray에서 수행합니다.
 - **Windows Portable** — 설치 없이 single EXE로 실행할 수 있습니다.
@@ -86,7 +87,7 @@ Port Lens는 화면에 표시하는 이름과 운영체제의 실제 process ide
 Port Lens는 **Managed App**과 단순히 특정 Port를 사용 중인 임의의 process를 의도적으로 구분합니다.
 
 1. Managed App은 사용자가 command, working directory, preferred Port를 등록한 뒤에만 Start / Stop / Restart 제어를 받습니다.
-2. Port Lens가 App을 Start하면 root PID를 기록하고 그 runtime ownership을 Managed Stop / Restart에 사용합니다.
+2. Port Lens가 App을 Start하면 managed runtime identity를 기록하고, 재시작 후 reattach 또는 Managed Stop / Restart 전에 root PID, creation-time, ancestry를 다시 검증합니다.
 3. preferred Port가 이미 사용 중이면 충돌을 표시하며 blocker를 자동 종료하지 않습니다.
 4. unmanaged listener는 별도의 **Kill** action과 명시적 confirmation dialog를 사용합니다.
 5. Kill 직전에 listener를 다시 조회해 동일 PID가 동일 Port를 계속 소유하는지 확인합니다.
@@ -100,7 +101,11 @@ Port Lens는 **Managed App**과 단순히 특정 Port를 사용 중인 임의의
 
 Settings에서 **System / English / 한국어**를 선택할 수 있습니다. System은 운영체제 언어를 따르며, 한국어 모드에서도 App, Port, Process, PID, Start / Stop / Restart 같은 기술·조작 label은 영어를 유지합니다. 설명, 경고, 확인 문구를 중심으로 한국어가 적용됩니다.
 
-Compact Bubble은 **70%~150%, 10% step**으로 크기를 조절할 수 있고 Language 설정과 함께 저장됩니다. Bubble을 다시 열어도 선택한 크기를 유지하며, full window로 복원하면 이전 size, position, maximized 상태를 되돌립니다.
+Compact Bubble은 **70%~150%, 10% step**으로 크기를 조절할 수 있고 Language 설정과 함께 저장됩니다. Bubble을 hover하면 별도 compact panel에서 등록 App 목록을 확인할 수 있습니다. Full window로 복원하면 이전 size, position, maximized 상태를 되돌립니다.
+
+Compact 상태에서도 idle monitoring은 계속 동작합니다. 실제 drag 중에는 polling 결과 반영을 잠시 미루고 drag 종료 직후 다시 갱신해 monitoring 최신성을 유지하면서 기존의 지속적인 drag catch-up 문제를 줄입니다.
+
+**Preview 제한:** Windows에서는 monitoring/render 작업과 drag 시작 시점이 겹치면 간헐적으로 drag 시작 순간 짧은 hitch/jump가 발생할 수 있습니다. Drag가 시작된 뒤 지속적인 cursor offset이나 catch-up jump는 현재 기대하지 않습니다.
 
 Native tray에는 **Open Port Lens**, **Show compact bubble**, **Refresh now**, **Quit Port Lens**가 있습니다. main window를 닫으면 app이 종료되지 않고 tray로 숨겨지며, 명시적으로 Quit해야 종료됩니다.
 
@@ -162,7 +167,7 @@ Rust backend
  ├─ ports.rs            listener discovery + command-line metadata
  ├─ process_control.rs  spawn / stop / terminate process trees
  ├─ registry.rs         persisted Managed App configuration
- ├─ settings.rs         language + bubble-size preferences
+ ├─ settings.rs         language + compact-mode preferences
  ├─ bubble.rs           compact native-window lifecycle
  └─ lib.rs              commands, tray, events, window lifecycle
 ```

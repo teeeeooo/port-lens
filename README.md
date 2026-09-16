@@ -33,9 +33,10 @@ The primary runtime target is **Windows 11**. macOS listener discovery is also i
 - **Live port discovery** — enumerate active TCP LISTEN endpoints directly from Windows or macOS.
 - **Friendly app identity** — show a registered app name first; otherwise derive a conservative runtime hint from the process command line while retaining the real executable name and PID.
 - **Managed app controls** — register a trusted command, working directory, and preferred port for one-click Start / Stop / Restart.
+- **Verified runtime reattach** — after Port Lens restarts, reconnect only to previously managed runtimes whose saved process identity still matches creation-time and root-ancestry checks.
 - **Conflict visibility** — refuse to start a managed app when another process already owns its port instead of silently killing the blocker.
 - **Safe unmanaged termination** — confirm before terminating an unknown listener and re-check the selected PID + port immediately before the kill.
-- **Compact bubble** — collapse the dashboard into an always-on-top `running apps / listening ports` monitor, resize it from 70% to 150%, and restore it with one click.
+- **Compact bubble** — collapse the dashboard into an always-on-top `running apps / listening ports` monitor, hover to inspect registered apps in a separate compact panel, resize it from 70% to 150%, and restore it with one click.
 - **Language preference** — follow the system language or explicitly choose English / 한국어 while keeping technical control labels in English.
 - **Native system tray** — reopen the dashboard, show the compact bubble, refresh, or quit without keeping the main window in front.
 - **Portable Windows build** — run the same GUI from a single unsigned EXE without installation.
@@ -90,7 +91,7 @@ For unregistered listeners, Port Lens may derive a conservative label from the p
 Port Lens deliberately distinguishes a **Managed App** from an arbitrary process that happens to own a port.
 
 1. A Managed App receives Start / Stop / Restart controls only after the user registers its command, working directory, and preferred port.
-2. Port Lens records the root PID when it starts that app and uses that runtime ownership for managed Stop / Restart.
+2. Port Lens records the managed runtime identity when it starts an app and uses root PID, creation-time, and ancestry checks before reattaching or applying managed Stop / Restart after a Port Lens restart.
 3. If the preferred port is already occupied, Port Lens reports the conflict and does not automatically terminate the blocker.
 4. An unmanaged listener has a separate **Kill** action with an explicit confirmation dialog.
 5. Immediately before an unmanaged kill, Port Lens re-enumerates listeners and verifies that the same PID still owns the selected port.
@@ -102,7 +103,11 @@ This is intentionally more conservative than automatically taking ownership of a
 
 ## Compact Bubble & Tray
 
-The dashboard can collapse into a small always-on-top bubble showing `running managed apps / total managed apps` and the current number of listening ports. Bubble size is configurable from **70% to 150% in 10% steps** and is persisted with the language preference. Expanding restores the previous window size, position, and maximized state.
+The dashboard can collapse into a small always-on-top bubble showing `running managed apps / total managed apps` and the current number of listening ports. Hovering the bubble opens a separate compact panel with the registered app list. Bubble size is configurable from **70% to 150% in 10% steps** and is persisted with the language preference. Expanding restores the previous window size, position, and maximized state.
+
+Compact mode keeps monitoring active while idle. During an actual drag, polling-result application is briefly deferred and refreshed again when the drag ends so the bubble remains current without reintroducing the earlier sustained drag catch-up behavior.
+
+**Known preview limitation:** on Windows, a drag can still occasionally show a short hitch/jump at initiation when monitoring/render work overlaps the start of the gesture. Once movement is underway, persistent cursor offset and sustained catch-up jump are not expected.
 
 The native tray provides **Open Port Lens**, **Show compact bubble**, **Refresh now**, and **Quit Port Lens**. Closing the main window hides it to the tray rather than terminating the application; explicit Quit exits the process.
 
@@ -166,7 +171,7 @@ Rust backend
  ├─ ports.rs            listener discovery + command-line metadata
  ├─ process_control.rs  spawn / stop / terminate process trees
  ├─ registry.rs         persisted Managed App configuration
- ├─ settings.rs         language + bubble-size preferences
+ ├─ settings.rs         language + compact-mode preferences
  ├─ bubble.rs           compact native-window lifecycle
  └─ lib.rs              commands, tray, events, window lifecycle
 ```
