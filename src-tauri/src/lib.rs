@@ -1,5 +1,6 @@
 mod bubble;
 mod diagnostics;
+pub mod log_capture;
 mod models;
 mod ports;
 mod process_control;
@@ -7,14 +8,14 @@ mod registry;
 mod settings;
 mod window_state;
 
-use diagnostics::{Diagnostics, ManagedLogPaths};
+use diagnostics::Diagnostics;
 use models::{ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime};
+use process_control::ManagedChild;
 use process_control::{
     is_process_alive, process_ancestry, spawn_managed, terminate_tree, ProcessSnapshot,
 };
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
-use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -514,8 +515,7 @@ struct ManagedProcessWatch {
     app_id: String,
     app_name: String,
     pid: u32,
-    child: Child,
-    log_paths: ManagedLogPaths,
+    child: ManagedChild,
     started: Instant,
 }
 
@@ -628,7 +628,6 @@ fn watch_managed_process(
             app_name,
             pid,
             mut child,
-            log_paths,
             started,
         } = watch;
         let exit_result = child.wait();
@@ -671,7 +670,9 @@ fn watch_managed_process(
             }
         }
 
-        diagnostics.record_managed_process_exit(&log_paths, pid, exit_code, elapsed_ms, expected);
+        child.finish_logs(diagnostics::managed_process_exit_text(
+            pid, exit_code, elapsed_ms, expected,
+        ));
         let level = if exit_result.is_err() {
             "ERROR"
         } else if expected {
@@ -861,7 +862,15 @@ async fn start_by_id(
 
     let log_paths = diagnostics.prepare_managed_logs(&app.id, &app.name)?;
     let started = Instant::now();
-    let child = spawn_managed(command, cwd, &log_paths)?;
+    let launch_command = command.to_owned();
+    let launch_cwd = cwd.to_owned();
+    let launch_logs = log_paths.clone();
+    // Collector readiness and legacy-log migration must not block the UI loop.
+    let child = tauri::async_runtime::spawn_blocking(move || {
+        spawn_managed(&launch_command, &launch_cwd, &launch_logs)
+    })
+    .await
+    .map_err(|error| format!("App launch worker failed: {error}"))??;
     let pid = child.id();
 
     state
@@ -906,7 +915,6 @@ async fn start_by_id(
             app_name: app.name.clone(),
             pid,
             child,
-            log_paths,
             started,
         },
     );

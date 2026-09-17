@@ -6,6 +6,14 @@ Only current actionable or intentionally deferred work is kept here. Completed i
 
 ## Active work
 
+### Managed output retention — separate candidate after PR #5 merge
+
+- PR #5 merged (`879fdc8`); user Windows drag PASS recorded for `066a688`.
+- Implement A09: 5 MiB × 2 files per stream, 20 MiB output history per App, live rotation and UI-closed capture.
+- Deliver a separate PR and Windows Actions artifact. User performs Windows manual validation; do not merge this PR or release yet.
+- Test guide: `docs/testing/managed-log-retention.md`. N01 onward remains deferred.
+
+
 ### Purpose-audit candidate — review and Windows validation
 
 Branch: `fix/product-audit-2026-09-18`. The existing `v0.3.1` release is not replaced.
@@ -24,7 +32,7 @@ Detailed scope, source locations, failure scenarios, and acceptance tests: `docs
 3. A05 (P1): per-App lifecycle/config operation gate and independent frontend busy state.
 4. A06/A07 (P1/P2): source-specific freshness/errors, common identity/status/count selectors.
 5. A08 (P1/P2): Unknown versus Exited process probes, bounded queries, remaining termination identity hardening; address safety-critical portions alongside A03.
-6. A09 (P2): bounded stdout/stderr retention during long-running processes.
+6. A09 (P2): implementation in separate `fix/managed-log-retention` candidate; automatic gates and Windows user validation pending. See `docs/testing/managed-log-retention.md`.
 
 Keep each follow-up bounded; do not combine them into a drag rewrite or feature expansion.
 

@@ -1,6 +1,6 @@
 use crate::diagnostics::ManagedLogPaths;
+use crate::log_capture::Capture;
 use serde::Deserialize;
-use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
@@ -31,7 +31,34 @@ pub struct ProcessSnapshot {
     pub creation_time: String,
 }
 
-pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result<Child, String> {
+pub struct ManagedChild {
+    child: Child,
+    stdout: Option<Capture>,
+    stderr: Option<Capture>,
+}
+
+impl ManagedChild {
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait()
+    }
+    pub fn finish_logs(&mut self, footer: String) {
+        if let Some(stdout) = self.stdout.take() {
+            stdout.finish(String::new());
+        }
+        if let Some(stderr) = self.stderr.take() {
+            stderr.finish(footer);
+        }
+    }
+}
+
+pub fn spawn_managed(
+    command: &str,
+    cwd: &str,
+    logs: &ManagedLogPaths,
+) -> Result<ManagedChild, String> {
     if command.trim().is_empty() {
         return Err("Start command cannot be empty.".into());
     }
@@ -39,16 +66,12 @@ pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result
         return Err(format!("Working directory does not exist: {cwd}"));
     }
 
-    let stdout = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&logs.stdout)
-        .map_err(|error| format!("Failed to open App stdout log: {error}"))?;
-    let stderr = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&logs.stderr)
-        .map_err(|error| format!("Failed to open App stderr log: {error}"))?;
+    let stdout = Capture::start(&logs.stdout, &logs.header)
+        .map_err(|error| format!("Failed to start App stdout capture: {error}"))?;
+    let stderr = Capture::start(&logs.stderr, &logs.header)
+        .map_err(|error| format!("Failed to start App stderr capture: {error}"))?;
+    let stdout_stdio = stdout.stdio().map_err(|error| error.to_string())?;
+    let stderr_stdio = stderr.stdio().map_err(|error| error.to_string())?;
 
     #[cfg(windows)]
     let child = {
@@ -58,8 +81,8 @@ pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result
             .current_dir(cwd)
             .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
+            .stdout(stdout_stdio)
+            .stderr(stderr_stdio);
         cmd.spawn()
     };
 
@@ -68,11 +91,17 @@ pub fn spawn_managed(command: &str, cwd: &str, logs: &ManagedLogPaths) -> Result
         .args(["-lc", command])
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
+        .stdout(stdout_stdio)
+        .stderr(stderr_stdio)
         .spawn();
 
-    child.map_err(|error| format!("Failed to start command: {error}"))
+    child
+        .map(|child| ManagedChild {
+            child,
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+        })
+        .map_err(|error| format!("Failed to start command: {error}"))
 }
 
 #[cfg(windows)]
@@ -293,12 +322,21 @@ mod tests {
         )
         .unwrap();
         assert!(child.wait().unwrap().success());
+        child.finish_logs(crate::diagnostics::managed_process_exit_text(
+            child.id(),
+            Some(0),
+            25,
+            true,
+        ));
 
         let mut captured = false;
         for _ in 0..40 {
             let stdout = fs::read_to_string(&logs.stdout).unwrap_or_default();
             let stderr = fs::read_to_string(&logs.stderr).unwrap_or_default();
-            if stdout.contains("port-lens-stdout") && stderr.contains("port-lens-stderr") {
+            if stdout.contains("port-lens-stdout")
+                && stderr.contains("port-lens-stderr")
+                && stderr.contains("expected=true")
+            {
                 captured = true;
                 break;
             }

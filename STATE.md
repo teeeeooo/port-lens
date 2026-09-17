@@ -86,6 +86,15 @@ The 2026-09-18 purpose audit has a separate candidate: full-inventory unmanaged 
 
 Next: review the candidate and run the Windows regression gate in `docs/audits/2026-09-18-product-purpose-audit.md`. That audit records remaining scan correctness, persistence, operation concurrency, freshness, identity, process-query, and log-retention work. `BACKLOG.md` is the execution index. Native D1 remains evidence-gated; the user explicitly requested the compact lifecycle re-audit described below.
 
+## Log-retention follow-up — 2026-09-18
+
+- PR #5 merged at `879fdc8` after user Windows drag PASS for `066a688`. Its CI passed on Windows/macOS; Bundle `35285774074` passed. No new release published.
+- Current work: A09 on `fix/managed-log-retention`, separate PR. Implemented bounded live stdout/stderr capture: each stream 5 MiB current + 5 MiB previous, 20 MiB output history per App.
+- Preserve managed process ancestry and UI-closed capture via detached collectors using the same EXE's early, windowless entry. Run startup/migration off the UI thread. Bounded queues discard excess output with warning/omission records if storage cannot keep up.
+- Existing old-version processes require Stop/Start to adopt capture. Small lock/status metadata is outside the 20 MiB output-file total. Windows executable replacement requires collectors to have exited.
+- Windows manual validation is reserved for the user. Prepare CI and Windows Bundle artifacts, then leave this PR unmerged and the release unpublished.
+- Test instructions and operational limits: `docs/testing/managed-log-retention.md`. N01 onward remains deferred.
+
 ## Current release decision — 2026-09-18
 
 - User scope: evaluate the existing purpose-audit + CL-01~CL-10 candidate, verify Windows drag behavior, then release if validation passes.

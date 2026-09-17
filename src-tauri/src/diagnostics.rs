@@ -11,13 +11,13 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
-const MAX_MANAGED_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ManagedLogPaths {
     pub directory: PathBuf,
     pub stdout: PathBuf,
     pub stderr: PathBuf,
+    pub header: String,
 }
 
 #[derive(Clone)]
@@ -71,22 +71,16 @@ impl Diagnostics {
         app_id: &str,
         app_name: &str,
     ) -> Result<ManagedLogPaths, String> {
-        let paths = self.managed_log_paths(app_id);
+        let mut paths = self.managed_log_paths(app_id);
         fs::create_dir_all(&paths.directory)
             .map_err(|error| format!("Failed to create App log directory: {error}"))?;
-        rotate_if_needed_with_limit(&paths.stdout, MAX_MANAGED_LOG_BYTES)
-            .map_err(|error| format!("Failed to rotate App stdout log: {error}"))?;
-        rotate_if_needed_with_limit(&paths.stderr, MAX_MANAGED_LOG_BYTES)
-            .map_err(|error| format!("Failed to rotate App stderr log: {error}"))?;
-        let timestamp = now_millis();
-        let header = format!(
-            "\n=== Port Lens run {timestamp} · {} ===\n",
+        paths.header = format!(
+            "\n=== Port Lens run {} · {} ===\n",
+            now_millis(),
             sanitize_line(app_name)
         );
-        append_text(&paths.stdout, &header)
-            .map_err(|error| format!("Failed to initialize App stdout log: {error}"))?;
-        append_text(&paths.stderr, &header)
-            .map_err(|error| format!("Failed to initialize App stderr log: {error}"))?;
+        // Only the capture owner may rotate/write an active stream. In
+        // particular, preparing a concurrent start must not mutate its logs.
         Ok(paths)
     }
 
@@ -97,23 +91,6 @@ impl Diagnostics {
         open_folder(&paths.directory)
     }
 
-    pub fn record_managed_process_exit(
-        &self,
-        paths: &ManagedLogPaths,
-        pid: u32,
-        exit_code: Option<i32>,
-        elapsed_ms: u64,
-        expected: bool,
-    ) {
-        let code = exit_code
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "unavailable".to_owned());
-        let footer = format!(
-            "\n=== Port Lens process exit · pid={pid} · code={code} · elapsedMs={elapsed_ms} · expected={expected} ===\n"
-        );
-        let _ = append_text(&paths.stderr, &footer);
-    }
-
     fn managed_log_paths(&self, app_id: &str) -> ManagedLogPaths {
         let directory = self
             .log_dir
@@ -122,6 +99,7 @@ impl Diagnostics {
         ManagedLogPaths {
             stdout: directory.join("stdout.log"),
             stderr: directory.join("stderr.log"),
+            header: String::new(),
             directory,
         }
     }
@@ -144,9 +122,16 @@ fn rotate_if_needed_with_limit(path: &Path, max_bytes: u64) -> std::io::Result<(
     fs::rename(path, rotated)
 }
 
-fn append_text(path: &Path, text: &str) -> std::io::Result<()> {
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(text.as_bytes())
+pub fn managed_process_exit_text(
+    pid: u32,
+    exit_code: Option<i32>,
+    elapsed_ms: u64,
+    expected: bool,
+) -> String {
+    let code = exit_code
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unavailable".to_owned());
+    format!("\n=== Port Lens process exit · pid={pid} · code={code} · elapsedMs={elapsed_ms} · expected={expected} ===\n")
 }
 
 fn now_millis() -> u128 {
@@ -241,14 +226,10 @@ mod tests {
 
         assert!(paths.directory.starts_with(root.join("managed-apps")));
         assert_eq!(paths.directory.file_name().unwrap(), "___bad_app_id");
-        assert!(fs::read_to_string(&paths.stdout)
-            .unwrap()
-            .contains("API Server"));
-        assert!(fs::read_to_string(&paths.stderr)
-            .unwrap()
-            .contains("API Server"));
-        diagnostics.record_managed_process_exit(&paths, 42, Some(7), 850, false);
-        let stderr = fs::read_to_string(&paths.stderr).unwrap();
+        assert!(paths.header.contains("API Server"));
+        assert!(!paths.stdout.exists());
+        assert!(!paths.stderr.exists());
+        let stderr = managed_process_exit_text(42, Some(7), 850, false);
         assert!(stderr.contains("pid=42"));
         assert!(stderr.contains("code=7"));
         assert!(stderr.contains("elapsedMs=850"));

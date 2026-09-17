@@ -153,6 +153,13 @@ P1은 다음 안정화에서 우선 처리할 정확성·안전성 문제이며,
 
 ## 11. A09 — 장시간 App 출력 로그의 크기 제한
 
+2026-09-18 후속: PR #5 병합 후 별도 `fix/managed-log-retention` 후보에서 구현.
+사용자 확정 정책은 stdout/stderr 각각 5MiB 현재 파일 + 이전 파일 1개(App당 출력 기록 20MiB)다.
+창을 닫아도 수집을 유지하고, 이전 버전에서 시작한 프로세스에는 Stop/Start 후 적용한다.
+자동 검증 및 Windows 사용자 확인은 [검증 문서](../testing/managed-log-retention.md)를 따른다.
+N01 이후 창 수명주기 작업은 이 변경에 포함하지 않는다.
+
+
 **근거:** `diagnostics.rs:68-95`에서 5 MiB 회전 검사는 시작 시 prepare_managed_logs에만 있고, `process_control.rs:34-73`은 child stdout/stderr를 파일에 직접 append한다. 재시작 없이 오래 쓰는 서비스에는 실행 중 상한이 없다.
 
 **구현 계약:** 실행 중에도 크기/세대 수가 제한되는 출력 수집 경로를 만든다. 파이프 소비가 막혀 서비스가 멈추지 않도록 backpressure·disk-full·회전 실패 시 정책을 명시한다. Windows의 열린 파일 핸들을 고려하여 active log를 무리하게 rename/delete하지 않는다. 가장 최근의 유용한 오류와 run 구분을 보존하고 사용자에게 capture 실패를 표시한다.
