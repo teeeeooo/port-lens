@@ -144,9 +144,8 @@ pub fn schedule_persist(window: WebviewWindow) {
             }
 
             if let Some(window) = app.get_webview_window("main") {
-                if collapsed {
-                    let _ = crate::bubble::hide_hover_panel(&window);
-                }
+                // Persistence owns geometry, not hover visibility. A delayed
+                // Moved/Resized save must not hide a freshly opened hover window.
                 let _ = persist_now(&window);
             }
 
