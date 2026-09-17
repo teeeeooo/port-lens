@@ -28,6 +28,23 @@ Detailed scope, source locations, failure scenarios, and acceptance tests: `docs
 
 Keep each follow-up bounded; do not combine them into a drag rewrite or feature expansion.
 
+### Compact lifecycle candidate — drag validation toward release
+
+Specification: `docs/audits/2026-09-18-compact-window-lifecycle-audit.md`.
+
+- Resume from the existing local changes on parent `363e77b`; the earlier commit/push blockage is historical. Prepare the candidate commit and Windows build on PR #5. Frontend regressions rechecked: 26/26 PASS.
+- CL-01~CL-10: session/epoch cancellation, loading/catch-up recovery, latest-only move pump, hover ownership/ACK, Open frontend coordination. Candidate implementation; not a Windows GUI PASS.
+- Gate: this candidate's Windows/macOS CI and package build, then Windows drag/hover/polling/cancellation/ordinary Open regression checks. Release if these pass; preserve the existing accepted brief drag-start hitch tolerance. Do not copy parent test PASS forward.
+- User decision (2026-09-18): N01 onward is deferred and does not block this release. Monitor-removal fault scenarios, native fault injection, document restarts and latency instrumentation are not mandatory gates for this scope.
+
+### Deferred compact follow-ups — do not open for this release
+
+- N01 (P1): recoverable native Open/collapse transitions; retain snapshot until success; avoid native calls under state mutex.
+- N02 (P1/P2): monitor removal / mixed DPI / maximized-normal restore bounds.
+- N03 (P2): invalidate stale keeper work at actual native application time.
+- CL-11 (P2): hover document/session handshake recovery; current ACK fix is same-document only.
+- CL-12 (conditional): instrument residual latency, compare baseline/runtime-only/current candidate; add native session guard only with evidence.
+
 ## Deferred product work
 
 ### Future scope — not scheduled
@@ -39,11 +56,11 @@ Existing external listeners can already be registered as persistent monitoring-o
 
 ### Compact drag residual
 
-Status: **ACCEPTED / NO ACTIVE WORK**.
+Status: **ACCEPTED for released v0.3.1; compact lifecycle follow-up active on PR #5 by explicit user request**.
 
 Windows validation of the final D0.5 path still shows a short drag-start hitch/jump on roughly 3 of 10 starts when monitoring/render work overlaps drag initiation. Cursor offset and sustained catch-up jump are absent; compact polling, drag-end refresh, hover hide, and `Open` remain correct.
 
-Do not reopen the native D1 capture state machine unless the residual becomes materially worse or new evidence justifies the added lifecycle/regression risk.
+The focused follow-up fixes lifecycle races without switching to D1. Keep D1 evidence-gated; do not label the approximate 3/10 native hitch solved before Windows comparison testing.
 
 ## Evidence
 

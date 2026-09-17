@@ -35,7 +35,12 @@ export default function CompactHover() {
         window.clearInterval(readyTimer);
         readyTimer = undefined;
       }
-      setPayload(event.payload);
+      // A live (revision 0) update may be batched with a show request. Keep
+      // its acknowledgement so the main window cannot wait forever for paint.
+      setPayload((current) => ({
+        ...event.payload,
+        revision: Math.max(current.revision, event.payload.revision),
+      }));
     }).then((unlisten) => {
       if (!active) {
         unlisten();

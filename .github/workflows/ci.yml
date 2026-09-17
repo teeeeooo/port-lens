@@ -32,6 +32,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Frontend regression tests
+        run: npm test
+
       - name: Frontend build
         run: npm run build
 
