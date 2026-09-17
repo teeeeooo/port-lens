@@ -110,7 +110,7 @@ Compact mode keeps monitoring active while idle. During an actual drag, polling-
 
 **Known preview limitation:** on Windows, a drag can still occasionally show a short hitch/jump at initiation when monitoring/render work overlaps the start of the gesture. Once movement is underway, persistent cursor offset and sustained catch-up jump are not expected.
 
-The native tray provides **Open Port Lens**, **Show compact bubble**, **Refresh now**, and **Quit Port Lens**. Closing the main window hides it to the tray rather than terminating the application; explicit Quit exits the process.
+The native tray provides **Open Port Lens**, **Show compact bubble**, **Refresh now**, and **Quit Port Lens**. **Minimize** keeps Port Lens running: it opens the compact bubble when Compact mode is enabled, or hides the window to the tray when disabled. **Closing the main window (X) or choosing Quit exits Port Lens.**
 
 ---
 

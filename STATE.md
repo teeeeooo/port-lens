@@ -1,6 +1,6 @@
 # Port Lens State
 
-Last updated: 2026-09-16
+Last updated: 2026-09-18
 
 ## Current baseline
 
@@ -8,10 +8,9 @@ Last updated: 2026-09-16
 - release tag: `v0.3.1`
 - release commit: `e32e9a95018e4556e733cb75b53c1a07e597dc49`
 - GitHub Release: **published / pre-release** on 2026-09-16
-- branch: `main` only
-- open PRs: none
-- extra local/remote branches: none
-- extra worktrees: none
+- released default-branch baseline: `main` at `320fe90045ef60d021f88ab9646c8e8a952d5559`
+- release-time housekeeping (2026-09-16): no open PRs, extra branches, or worktrees
+- current audit candidate: `fix/product-audit-2026-09-18`, isolated worktree; not released
 
 Recent merged milestones:
 - PR #3 — verified managed-runtime reattach and lifecycle hardening
@@ -81,4 +80,8 @@ This residual is accepted for the current preview. The larger Windows-native D1 
 
 ## Next action
 
-`v0.3.1` release housekeeping is complete. There is no active blocker. Future product work remains intentionally unscheduled in `BACKLOG.md`; reopen compact drag only if the accepted residual materially worsens or new evidence changes the risk/reward of D1.
+`v0.3.1` release housekeeping remains complete; the released build is unchanged.
+
+The 2026-09-18 purpose audit has a separate candidate: full-inventory unmanaged Kill protection, nonblocking runtime probes with snapshot-safe pruning, five regression tests, and EN/KO close-behavior documentation corrections. Local macOS validation: frontend build PASS, Clippy `-D warnings` PASS, Rust tests **41/41 PASS**. Windows CI and native runtime evidence must be checked separately before merge/release. No drag/window execution code was changed.
+
+Next: review the candidate and run the Windows regression gate in `docs/audits/2026-09-18-product-purpose-audit.md`. That audit records remaining scan correctness, persistence, operation concurrency, freshness, identity, process-query, and log-retention work. `BACKLOG.md` is the execution index. Reopen compact drag only if the accepted residual materially worsens or new evidence changes the risk/reward of D1.

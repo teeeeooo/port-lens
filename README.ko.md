@@ -108,7 +108,7 @@ Compact 상태에서도 idle monitoring은 계속 동작합니다. 실제 drag �
 
 **Preview 제한:** Windows에서는 monitoring/render 작업과 drag 시작 시점이 겹치면 간헐적으로 drag 시작 순간 짧은 hitch/jump가 발생할 수 있습니다. Drag가 시작된 뒤 지속적인 cursor offset이나 catch-up jump는 현재 기대하지 않습니다.
 
-Native tray에는 **Open Port Lens**, **Show compact bubble**, **Refresh now**, **Quit Port Lens**가 있습니다. main window를 닫으면 app이 종료되지 않고 tray로 숨겨지며, 명시적으로 Quit해야 종료됩니다.
+Native tray에는 **Open Port Lens**, **Show compact bubble**, **Refresh now**, **Quit Port Lens**가 있습니다. **Minimize**는 Port Lens를 실행 상태로 유지하며, Compact mode가 켜져 있으면 bubble로 전환하고 꺼져 있으면 tray로 숨깁니다. **main window의 닫기(X) 또는 Quit은 Port Lens를 종료합니다.**
 
 ---
 ## 🛠️ Development

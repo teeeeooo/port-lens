@@ -1,12 +1,32 @@
 # Port Lens Backlog
 
-Last updated: 2026-09-16
+Last updated: 2026-09-18
 
 Only current actionable or intentionally deferred work is kept here. Completed implementation and investigation history belongs in `STATE.md` and `docs/audits/`.
 
 ## Active work
 
-None. `main` is clean and synchronized with `origin/main`; there are no open PRs or non-main branches/worktrees.
+### Purpose-audit candidate — review and Windows validation
+
+Branch: `fix/product-audit-2026-09-18`. The existing `v0.3.1` release is not replaced.
+
+- A01: full-inventory guard prevents unmanaged Kill through another port of the same managed child; local policy tests pass.
+- A02: runtime probes run off the event thread and outside registry locks; delayed probes cannot prune a replacement PID; local tests pass.
+- A10: EN/KO README now describes existing Minimize versus X/Quit behavior correctly; no lifecycle behavior change.
+- Gate: Windows CI plus manual dual-port, reattach, concurrent runtime refresh, compact/tray regression checks. Do not treat local macOS PASS as Windows GUI PASS.
+
+### Follow-up stabilization — specified, not implemented
+
+Detailed scope, source locations, failure scenarios, and acceptance tests: `docs/audits/2026-09-18-product-purpose-audit.md`.
+
+1. A03 (P1): fail-closed listener scan, explicit UTF-8/read errors, no-match versus provider failure.
+2. A04 (P1): atomic registry/settings persistence and publish-after-commit; preserve corrupt inputs for recovery.
+3. A05 (P1): per-App lifecycle/config operation gate and independent frontend busy state.
+4. A06/A07 (P1/P2): source-specific freshness/errors, common identity/status/count selectors.
+5. A08 (P1/P2): Unknown versus Exited process probes, bounded queries, remaining termination identity hardening; address safety-critical portions alongside A03.
+6. A09 (P2): bounded stdout/stderr retention during long-running processes.
+
+Keep each follow-up bounded; do not combine them into a drag rewrite or feature expansion.
 
 ## Deferred product work
 

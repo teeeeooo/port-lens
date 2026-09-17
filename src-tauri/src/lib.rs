@@ -432,13 +432,41 @@ fn get_managed_apps(state: State<'_, AppState>) -> Result<Vec<ManagedApp>, Strin
         .map_err(|_| "App registry lock is poisoned.".to_string())
 }
 
+// A probe may finish after Start/Restart has installed a different runtime.
+// Only prune the exact (app, PID) observed by that probe.
+fn prune_stopped_runtimes(
+    runtimes: &mut std::collections::HashMap<String, u32>,
+    stopped: &[(String, u32)],
+) {
+    for (app_id, observed_pid) in stopped {
+        if runtimes.get(app_id) == Some(observed_pid) {
+            runtimes.remove(app_id);
+        }
+    }
+}
+
 #[tauri::command]
-fn get_managed_runtimes(state: State<'_, AppState>) -> Result<Vec<ManagedRuntime>, String> {
+async fn get_managed_runtimes(state: State<'_, AppState>) -> Result<Vec<ManagedRuntime>, String> {
+    let snapshot = state
+        .runtime_pids
+        .lock()
+        .map_err(|_| "Runtime registry lock is poisoned.".to_string())?
+        .clone();
+    // tasklist/ps must not run on the native event thread or under the registry lock.
+    let stopped = tauri::async_runtime::spawn_blocking(move || {
+        snapshot
+            .into_iter()
+            .filter(|(_, pid)| !is_process_alive(*pid))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| format!("Runtime probe worker failed: {error}"))?;
+
     let mut runtimes = state
         .runtime_pids
         .lock()
         .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
-    runtimes.retain(|_, pid| is_process_alive(*pid));
+    prune_stopped_runtimes(&mut runtimes, &stopped);
     let live_ids = runtimes
         .keys()
         .cloned()
@@ -448,14 +476,16 @@ fn get_managed_runtimes(state: State<'_, AppState>) -> Result<Vec<ManagedRuntime
         .lock()
         .map_err(|_| "Reattached runtime registry lock is poisoned.".to_string())?;
     reattached.retain(|app_id| live_ids.contains(app_id));
-    Ok(runtimes
+    let mut result = runtimes
         .iter()
         .map(|(app_id, root_pid)| ManagedRuntime {
             app_id: app_id.clone(),
             root_pid: *root_pid,
             reattached: reattached.contains(app_id),
         })
-        .collect())
+        .collect::<Vec<_>>();
+    result.sort_by(|left, right| left.app_id.cmp(&right.app_id));
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1045,6 +1075,38 @@ async fn restart_managed_app(
     result
 }
 
+// `listeners` must be a fresh, complete inventory, not just the selected port.
+// A managed child can own additional ports even though its root PID differs.
+fn validate_unmanaged_termination(
+    pid: u32,
+    port: u16,
+    listeners: &[ListenerInfo],
+    runtimes: &std::collections::HashMap<String, u32>,
+    apps: &[ManagedApp],
+) -> Result<(), String> {
+    if !listeners
+        .iter()
+        .any(|listener| listener.pid == pid && listener.port == port)
+    {
+        return Err("The selected listener changed. Refresh the list and try again.".into());
+    }
+    if runtimes.values().any(|managed| *managed == pid) {
+        return Err("Use the App Stop action for processes started by Port Lens.".into());
+    }
+    let owns_managed_port = apps
+        .iter()
+        .filter(|app| runtimes.contains_key(&app.id))
+        .any(|app| {
+            listeners
+                .iter()
+                .any(|listener| listener.pid == pid && listener.port == app.port)
+        });
+    if owns_managed_port {
+        return Err("This process owns a Port assigned to a running App. Use Stop instead.".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn kill_listener_process(
     pid: u32,
@@ -1054,47 +1116,23 @@ async fn kill_listener_process(
 ) -> Result<(), String> {
     let diagnostics = diagnostics.inner().clone();
     let result = async {
-        let listeners = run_listener_scan("targeted", vec![port], diagnostics.clone()).await?;
-        if !listeners
-            .iter()
-            .any(|listener| listener.pid == pid && listener.port == port)
+        // Full inventory is intentional for this explicit destructive action only;
+        // routine registered-app monitoring still uses targeted scans.
+        let listeners = run_listener_scan("inventory", Vec::new(), diagnostics.clone()).await?;
         {
-            return Err("The selected listener changed. Refresh the list and try again.".into());
+            let runtimes = state
+                .runtime_pids
+                .lock()
+                .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
+            let apps = state
+                .apps
+                .lock()
+                .map_err(|_| "App registry lock is poisoned.".to_string())?;
+            validate_unmanaged_termination(pid, port, &listeners, &runtimes, &apps)?;
         }
-
-        let runtimes = state
-            .runtime_pids
-            .lock()
-            .map_err(|_| "Runtime registry lock is poisoned.".to_string())?;
-        if runtimes.values().any(|managed| *managed == pid) {
-            return Err("Use the App Stop action for processes started by Port Lens.".into());
-        }
-
-        let managed_ports = state
-            .apps
-            .lock()
-            .map_err(|_| "App registry lock is poisoned.".to_string())?
-            .iter()
-            .filter(|app| runtimes.contains_key(&app.id))
-            .map(|app| app.port)
-            .collect::<Vec<_>>();
-        drop(runtimes);
-
-        let target_ports = listeners
-            .iter()
-            .filter(|listener| listener.pid == pid)
-            .map(|listener| listener.port)
-            .collect::<Vec<_>>();
-        if target_ports
-            .iter()
-            .any(|target| managed_ports.contains(target))
-        {
-            return Err(
-                "This process owns a Port assigned to a running App. Use Stop instead.".into(),
-            );
-        }
-
-        terminate_tree(pid)
+        tauri::async_runtime::spawn_blocking(move || terminate_tree(pid))
+            .await
+            .map_err(|error| format!("Process termination worker failed: {error}"))?
     }
     .await;
     record_failure(
@@ -1566,6 +1604,103 @@ mod tests {
             },
         ];
         (app, listener, ancestry)
+    }
+
+    #[test]
+    fn unmanaged_kill_rejects_secondary_port_of_managed_child() {
+        let (app, listener, _) = reattach_fixture();
+        let secondary = ListenerInfo {
+            port: 3001,
+            ..listener.clone()
+        };
+        let runtimes = std::collections::HashMap::from([(app.id.clone(), 4100)]);
+        let result = validate_unmanaged_termination(
+            secondary.pid,
+            secondary.port,
+            &[listener, secondary.clone()],
+            &runtimes,
+            &[app],
+        );
+        assert!(result.unwrap_err().contains("Use Stop instead"));
+    }
+
+    #[test]
+    fn unmanaged_kill_rejects_managed_root_and_stale_selection() {
+        let (app, listener, _) = reattach_fixture();
+        let root_listener = ListenerInfo {
+            pid: 4100,
+            port: 3001,
+            ..listener.clone()
+        };
+        let runtimes = std::collections::HashMap::from([(app.id.clone(), 4100)]);
+        assert!(validate_unmanaged_termination(
+            4100,
+            3001,
+            &[root_listener],
+            &runtimes,
+            std::slice::from_ref(&app),
+        )
+        .unwrap_err()
+        .contains("App Stop"));
+        assert!(
+            validate_unmanaged_termination(9999, 3000, &[listener], &runtimes, &[app],)
+                .unwrap_err()
+                .contains("selected listener changed")
+        );
+    }
+
+    #[test]
+    fn unmanaged_kill_allows_monitoring_only_listener() {
+        let (mut app, listener, _) = reattach_fixture();
+        app.command = None;
+        app.cwd = None;
+        assert!(validate_unmanaged_termination(
+            listener.pid,
+            listener.port,
+            std::slice::from_ref(&listener),
+            &std::collections::HashMap::new(),
+            &[app],
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn unmanaged_kill_does_not_confuse_unrelated_process_with_managed_owner() {
+        let (app, listener, _) = reattach_fixture();
+        let unrelated = ListenerInfo {
+            pid: 9000,
+            port: 3001,
+            ..listener.clone()
+        };
+        let runtimes = std::collections::HashMap::from([(app.id.clone(), 4100)]);
+        assert!(validate_unmanaged_termination(
+            unrelated.pid,
+            unrelated.port,
+            &[listener, unrelated.clone()],
+            &runtimes,
+            &[app],
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn delayed_runtime_probe_cannot_remove_replacement_or_new_runtime() {
+        let mut runtimes = std::collections::HashMap::from([
+            ("restarted".into(), 200),
+            ("stopped".into(), 300),
+            ("new".into(), 400),
+        ]);
+        prune_stopped_runtimes(
+            &mut runtimes,
+            &[
+                ("restarted".into(), 100),
+                ("stopped".into(), 300),
+                ("removed".into(), 500),
+            ],
+        );
+        assert_eq!(runtimes.len(), 2);
+        assert_eq!(runtimes.get("restarted"), Some(&200));
+        assert_eq!(runtimes.get("new"), Some(&400));
     }
 
     #[test]
