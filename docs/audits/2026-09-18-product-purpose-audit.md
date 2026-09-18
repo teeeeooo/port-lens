@@ -29,7 +29,7 @@ README 양 언어, STATE/BACKLOG, CI와 패키징 설정, React polling/action/s
 | A06 | P1 | stale 데이터를 정상 Online으로 표시하고 오류를 다른 조회가 지움 | 후속 구현 명세 |
 | A07 | P2 | 앱 identity, 집계, 상세 목록 표현의 불일치 | 후속 구현 명세 |
 | A08 | P1/P2 | process probe의 오류/종료 구분 및 시간 제한 부족 | A02와 분리한 후속 명세 |
-| A09 | P2 | 장시간 실행 App의 stdout/stderr가 무제한 증가 가능 | 후속 구현 명세 |
+| A09 | P2 | 장시간 실행 App의 stdout/stderr가 무제한 증가 가능 | 자동 수집 제거로 방향 변경(PR #6) |
 | A10 | P2 | README의 닫기 동작 설명이 실제 구현과 다름 | EN/KO 문서 수정, 런타임 동작 불변 |
 
 P1은 다음 안정화에서 우선 처리할 정확성·안전성 문제이며, 인터넷 원격 취약점 등급이나 현재 사용자 피해를 뜻하지 않는다. P2는 그 다음의 일관성·상주 운영 개선이다.
@@ -151,20 +151,27 @@ P1은 다음 안정화에서 우선 처리할 정확성·안전성 문제이며,
 
 **완료 기준:** 명령 없음/권한 거부/hang/잘린 결과, 이미 종료, PID reuse, 다른 프로세스 트리, 조회 직후 Restart를 주입한다. 실패가 성공으로 바뀌거나 Unknown 때문에 임의의 새 프로세스가 시작·종료되지 않아야 한다.
 
-## 11. A09 — 장시간 App 출력 로그의 크기 제한
+## 11. A09 — App 출력 수집 제거로 방향 변경
 
-2026-09-18 후속: PR #5 병합 후 별도 `fix/managed-log-retention` 후보에서 구현.
-사용자 확정 정책은 stdout/stderr 각각 5MiB 현재 파일 + 이전 파일 1개(App당 출력 기록 20MiB)다.
-창을 닫아도 수집을 유지하고, 이전 버전에서 시작한 프로세스에는 Stop/Start 후 적용한다.
-자동 검증 및 Windows 사용자 확인은 [검증 문서](../testing/managed-log-retention.md)를 따른다.
-N01 이후 창 수명주기 작업은 이 변경에 포함하지 않는다.
+**최종 사용자 결정 (2026-09-18):** Port Lens는 로그 저장 도구가 아니다. 각 App의
+stdout/stderr와 자체 로그는 해당 App이 관리한다. Port Lens는 자신이 수행한 실행·종료
+요청/결과를 기존 `port-lens.log`에 남긴다.
 
+기존 발견 사항은 App 시작 시에만 5MiB 회전 여부를 검사하고 실행 중에는 직접 append해
+장기 실행 시 파일이 무제한 증가한다는 것이었다. PR #6의 최초 후보 `12b2f2d`는 별도
+수집기로 상한을 구현했으나, 종료 후 잔류 프로세스·계속되는 디스크 쓰기·출력 경로 의존성
+때문에 이 접근은 채택하지 않는다. 5MiB × 2개 정책과 수집기 명세는 대체되었다.
 
-**근거:** `diagnostics.rs:68-95`에서 5 MiB 회전 검사는 시작 시 prepare_managed_logs에만 있고, `process_control.rs:34-73`은 child stdout/stderr를 파일에 직접 append한다. 재시작 없이 오래 쓰는 서비스에는 실행 중 상한이 없다.
+**변경 계약:** 자동 stdout/stderr 수집·수집기 진입점·App별 Logs UI/API를 제거하고
+새로 실행하는 App의 두 스트림은 null device로 연결한다. 시작/종료/재시작 요청과 결과,
+생성 PID, 관찰한 listener/identity 정보, 종료 명령 결과 및 관찰한 exit 정보를 자체
+진단 로그에 기록한다. 기존 상태 판정과 소유권 검증을 재사용하며 health check나
+정상 종료 판정을 새로 설계하지 않는다. App 자체 로그와 기존 저장 파일은 변경하지 않는다.
 
-**구현 계약:** 실행 중에도 크기/세대 수가 제한되는 출력 수집 경로를 만든다. 파이프 소비가 막혀 서비스가 멈추지 않도록 backpressure·disk-full·회전 실패 시 정책을 명시한다. Windows의 열린 파일 핸들을 고려하여 active log를 무리하게 rename/delete하지 않는다. 가장 최근의 유용한 오류와 run 구분을 보존하고 사용자에게 capture 실패를 표시한다.
-
-**완료 기준:** 지속 출력과 매우 긴 줄, 동시 stdout/stderr, 디스크 쓰기 실패, 중단·재시작을 테스트한다. 최대 보존량을 제한하면서 애플리케이션 실행을 block하지 않아야 한다. 새 기능이 아니라 기존 상주 용도의 운영 안정화다.
+**검증:** 다량의 stdout/stderr 출력이 막히거나 파일을 만들지 않는지, launcher 종료 후에도
+App 출력이 정상 동작하는지, exit code가 유지되는지, 자체 진단 로그만 회전하는지 확인한다.
+Windows 사용자는 Start/Stop/Restart·Port Lens 종료/재연결을 검증한다.
+[검증 문서](../testing/managed-lifecycle-diagnostics.md). N01 이후는 계속 보류한다.
 
 ## 12. 병합 전 Windows 검증 체크리스트
 

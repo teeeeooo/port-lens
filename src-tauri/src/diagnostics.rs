@@ -12,14 +12,6 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
-#[derive(Debug, Clone)]
-pub struct ManagedLogPaths {
-    pub directory: PathBuf,
-    pub stdout: PathBuf,
-    pub stderr: PathBuf,
-    pub header: String,
-}
-
 #[derive(Clone)]
 pub struct Diagnostics {
     log_dir: PathBuf,
@@ -66,41 +58,26 @@ impl Diagnostics {
         open_folder(&self.log_dir)
     }
 
-    pub fn prepare_managed_logs(
-        &self,
-        app_id: &str,
-        app_name: &str,
-    ) -> Result<ManagedLogPaths, String> {
-        let mut paths = self.managed_log_paths(app_id);
-        fs::create_dir_all(&paths.directory)
-            .map_err(|error| format!("Failed to create App log directory: {error}"))?;
-        paths.header = format!(
-            "\n=== Port Lens run {} · {} ===\n",
-            now_millis(),
-            sanitize_line(app_name)
+    pub fn managed_action_requested(&self, action: &str, app_id: &str) {
+        self.record(
+            "INFO",
+            "managed_action",
+            format!("action={action} appId={app_id} phase=requested"),
         );
-        // Only the capture owner may rotate/write an active stream. In
-        // particular, preparing a concurrent start must not mutate its logs.
-        Ok(paths)
     }
 
-    pub fn open_managed_log_folder(&self, app_id: &str) -> Result<(), String> {
-        let paths = self.managed_log_paths(app_id);
-        fs::create_dir_all(&paths.directory)
-            .map_err(|error| format!("Failed to create App log directory: {error}"))?;
-        open_folder(&paths.directory)
-    }
-
-    fn managed_log_paths(&self, app_id: &str) -> ManagedLogPaths {
-        let directory = self
-            .log_dir
-            .join("managed-apps")
-            .join(sanitize_path_component(app_id));
-        ManagedLogPaths {
-            stdout: directory.join("stdout.log"),
-            stderr: directory.join("stderr.log"),
-            header: String::new(),
-            directory,
+    pub fn managed_action_result<T>(&self, action: &str, app_id: &str, result: &Result<T, String>) {
+        match result {
+            Ok(_) => self.record(
+                "INFO",
+                "managed_action",
+                format!("action={action} appId={app_id} phase=returned result=ok"),
+            ),
+            Err(error) => self.record(
+                "ERROR",
+                "managed_action",
+                format!("action={action} appId={app_id} phase=returned result=error error={error}"),
+            ),
         }
     }
 }
@@ -122,18 +99,6 @@ fn rotate_if_needed_with_limit(path: &Path, max_bytes: u64) -> std::io::Result<(
     fs::rename(path, rotated)
 }
 
-pub fn managed_process_exit_text(
-    pid: u32,
-    exit_code: Option<i32>,
-    elapsed_ms: u64,
-    expected: bool,
-) -> String {
-    let code = exit_code
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unavailable".to_owned());
-    format!("\n=== Port Lens process exit · pid={pid} · code={code} · elapsedMs={elapsed_ms} · expected={expected} ===\n")
-}
-
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -143,25 +108,6 @@ fn now_millis() -> u128 {
 
 fn sanitize_line(value: &str) -> String {
     value.replace(['\r', '\n'], " ")
-}
-
-fn sanitize_path_component(value: &str) -> String {
-    let mut sanitized = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    sanitized.truncate(80);
-    if sanitized.is_empty() {
-        "app".to_owned()
-    } else {
-        sanitized
-    }
 }
 
 fn panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
@@ -213,27 +159,31 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn managed_log_paths_are_sanitized_and_initialized() {
+    fn lifecycle_requests_and_results_use_only_rotating_diagnostic_log() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("port-lens-output-{nonce}"));
+        let root = std::env::temp_dir().join(format!("port-lens-actions-{nonce}"));
         let diagnostics = Diagnostics::new(root.clone()).unwrap();
-        let paths = diagnostics
-            .prepare_managed_logs("../bad/app:id", "API\nServer")
-            .unwrap();
-
-        assert!(paths.directory.starts_with(root.join("managed-apps")));
-        assert_eq!(paths.directory.file_name().unwrap(), "___bad_app_id");
-        assert!(paths.header.contains("API Server"));
-        assert!(!paths.stdout.exists());
-        assert!(!paths.stderr.exists());
-        let stderr = managed_process_exit_text(42, Some(7), 850, false);
-        assert!(stderr.contains("pid=42"));
-        assert!(stderr.contains("code=7"));
-        assert!(stderr.contains("elapsedMs=850"));
-        assert!(stderr.contains("expected=false"));
-        let _ = fs::remove_dir_all(root);
+        let file = root.join("port-lens.log");
+        fs::write(&file, vec![b'x'; MAX_LOG_BYTES as usize]).unwrap();
+        diagnostics.managed_action_requested("start", "api");
+        diagnostics.managed_action_result("start", "api", &Ok::<_, String>(()));
+        diagnostics.managed_action_requested("stop", "api");
+        diagnostics.managed_action_result::<()>(
+            "stop",
+            "api",
+            &Err("access denied\ninjected".into()),
+        );
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("action=start appId=api phase=requested"));
+        assert!(text.contains("action=start appId=api phase=returned result=ok"));
+        assert!(text.contains("action=stop appId=api phase=requested"));
+        assert!(text.contains("result=error error=access denied injected"));
+        assert_eq!(text.lines().count(), 4);
+        assert!(root.join("port-lens.log.1").exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
     }
 }

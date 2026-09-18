@@ -1,6 +1,5 @@
 mod bubble;
 mod diagnostics;
-pub mod log_capture;
 mod models;
 mod ports;
 mod process_control;
@@ -10,12 +9,12 @@ mod window_state;
 
 use diagnostics::Diagnostics;
 use models::{ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime};
-use process_control::ManagedChild;
 use process_control::{
     is_process_alive, process_ancestry, spawn_managed, terminate_tree, ProcessSnapshot,
 };
 use registry::AppState;
 use settings::{AppSettings, SettingsPatch, SettingsStore};
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -515,7 +514,7 @@ struct ManagedProcessWatch {
     app_id: String,
     app_name: String,
     pid: u32,
-    child: ManagedChild,
+    child: Child,
     started: Instant,
 }
 
@@ -526,6 +525,7 @@ async fn capture_managed_identity_after_start(
     port: u16,
     root_pid: u32,
 ) {
+    let mut listener_observed = false;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let state = app_handle.state::<AppState>();
@@ -546,6 +546,7 @@ async fn capture_managed_identity_after_start(
         let Some(listener) = listeners.into_iter().find(|listener| listener.port == port) else {
             continue;
         };
+        listener_observed = true;
 
         #[cfg(windows)]
         let ancestry = {
@@ -601,7 +602,7 @@ async fn capture_managed_identity_after_start(
             "INFO",
             "managed_identity",
             format!(
-                "appId={app_id} rootPid={root_pid} listenerPid={} process={} reattachIdentity={}",
+                "appId={app_id} rootPid={root_pid} port={port} listenerPid={} process={} listenerObserved={listener_observed} identityRecorded=true reattachIdentity={}",
                 listener.pid,
                 listener.process_name,
                 cfg!(windows)
@@ -613,7 +614,7 @@ async fn capture_managed_identity_after_start(
     diagnostics.record(
         "WARN",
         "managed_identity",
-        format!("appId={app_id} rootPid={root_pid} port={port} listenerNotObserved=true"),
+        format!("appId={app_id} rootPid={root_pid} port={port} listenerObserved={listener_observed} identityRecorded=false"),
     );
 }
 
@@ -670,9 +671,6 @@ fn watch_managed_process(
             }
         }
 
-        child.finish_logs(diagnostics::managed_process_exit_text(
-            pid, exit_code, elapsed_ms, expected,
-        ));
         let level = if exit_result.is_err() {
             "ERROR"
         } else if expected {
@@ -827,6 +825,11 @@ async fn start_by_id(
                     .lock()
                     .map(|items| items.contains(app_id))
                     .unwrap_or(false);
+                diagnostics.record(
+                    "INFO",
+                    "managed_process_start",
+                    format!("appId={app_id} pid={pid} result=already_running"),
+                );
                 return Ok(ManagedRuntime {
                     app_id: app_id.to_string(),
                     root_pid: pid,
@@ -860,17 +863,14 @@ async fn start_by_id(
         ));
     }
 
-    let log_paths = diagnostics.prepare_managed_logs(&app.id, &app.name)?;
     let started = Instant::now();
     let launch_command = command.to_owned();
     let launch_cwd = cwd.to_owned();
-    let launch_logs = log_paths.clone();
-    // Collector readiness and legacy-log migration must not block the UI loop.
-    let child = tauri::async_runtime::spawn_blocking(move || {
-        spawn_managed(&launch_command, &launch_cwd, &launch_logs)
-    })
-    .await
-    .map_err(|error| format!("App launch worker failed: {error}"))??;
+    // Keep command creation off the UI loop. App output goes to null devices.
+    let child =
+        tauri::async_runtime::spawn_blocking(move || spawn_managed(&launch_command, &launch_cwd))
+            .await
+            .map_err(|error| format!("App launch worker failed: {error}"))??;
     let pid = child.id();
 
     state
@@ -894,10 +894,8 @@ async fn start_by_id(
         "INFO",
         "managed_process_start",
         format!(
-            "appId={} pid={pid} port={} logDir={}",
-            app.id,
-            app.port,
-            log_paths.directory.display()
+            "appId={} pid={pid} port={} result=process_created",
+            app.id, app.port
         ),
     );
     tauri::async_runtime::spawn(capture_managed_identity_after_start(
@@ -926,7 +924,11 @@ async fn start_by_id(
     })
 }
 
-async fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
+async fn stop_by_id(
+    app_id: &str,
+    state: &AppState,
+    diagnostics: &Diagnostics,
+) -> Result<(), String> {
     let pid = state
         .runtime_pids
         .lock()
@@ -940,7 +942,8 @@ async fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
         .map_err(|_| "Reattached runtime registry lock is poisoned.".to_string())?
         .contains(app_id);
 
-    if is_process_alive(pid) {
+    let was_alive = is_process_alive(pid);
+    if was_alive {
         if reattached {
             let app = state
                 .apps
@@ -987,6 +990,18 @@ async fn stop_by_id(app_id: &str, state: &AppState) -> Result<(), String> {
             return Err(error);
         }
     }
+    diagnostics.record(
+        "INFO",
+        "managed_process_stop",
+        format!(
+            "appId={app_id} pid={pid} reattached={reattached} result={}",
+            if was_alive {
+                "termination_command_succeeded"
+            } else {
+                "already_not_running"
+            }
+        ),
+    );
     state
         .runtime_pids
         .lock()
@@ -1018,13 +1033,9 @@ async fn start_managed_app(
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<ManagedRuntime, String> {
     let diagnostics = diagnostics.inner().clone();
+    diagnostics.managed_action_requested("start", &app_id);
     let result = start_by_id(&app_id, &state, diagnostics.clone(), &app_handle).await;
-    record_failure(
-        &diagnostics,
-        "managed_action",
-        &format!("action=start appId={app_id}"),
-        &result,
-    );
+    diagnostics.managed_action_result("start", &app_id, &result);
     result
 }
 
@@ -1034,20 +1045,19 @@ async fn stop_managed_app(
     state: State<'_, AppState>,
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<(), String> {
-    set_reattach_suppressed(&state, &app_id, true)?;
-    let result = stop_by_id(&app_id, &state).await;
-    let release_result = set_reattach_suppressed(&state, &app_id, false);
-    let result = match (result, release_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-    };
-    record_failure(
-        &diagnostics,
-        "managed_action",
-        &format!("action=stop appId={app_id}"),
-        &result,
-    );
+    diagnostics.managed_action_requested("stop", &app_id);
+    let result = async {
+        set_reattach_suppressed(&state, &app_id, true)?;
+        let result = stop_by_id(&app_id, &state, &diagnostics).await;
+        let release_result = set_reattach_suppressed(&state, &app_id, false);
+        match (result, release_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+        }
+    }
+    .await;
+    diagnostics.managed_action_result("stop", &app_id, &result);
     result
 }
 
@@ -1059,27 +1069,26 @@ async fn restart_managed_app(
     diagnostics: State<'_, Diagnostics>,
 ) -> Result<ManagedRuntime, String> {
     let diagnostics = diagnostics.inner().clone();
-    set_reattach_suppressed(&state, &app_id, true)?;
+    diagnostics.managed_action_requested("restart", &app_id);
     let result = async {
-        stop_by_id(&app_id, &state).await?;
-        tauri::async_runtime::spawn_blocking(|| thread::sleep(Duration::from_millis(300)))
-            .await
-            .map_err(|error| format!("Restart delay worker failed: {error}"))?;
-        start_by_id(&app_id, &state, diagnostics.clone(), &app_handle).await
+        set_reattach_suppressed(&state, &app_id, true)?;
+        let result = async {
+            stop_by_id(&app_id, &state, &diagnostics).await?;
+            tauri::async_runtime::spawn_blocking(|| thread::sleep(Duration::from_millis(300)))
+                .await
+                .map_err(|error| format!("Restart delay worker failed: {error}"))?;
+            start_by_id(&app_id, &state, diagnostics.clone(), &app_handle).await
+        }
+        .await;
+        let release_result = set_reattach_suppressed(&state, &app_id, false);
+        match (result, release_result) {
+            (Ok(runtime), Ok(())) => Ok(runtime),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
     }
     .await;
-    let release_result = set_reattach_suppressed(&state, &app_id, false);
-    let result = match (result, release_result) {
-        (Ok(runtime), Ok(())) => Ok(runtime),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-    };
-    record_failure(
-        &diagnostics,
-        "managed_action",
-        &format!("action=restart appId={app_id}"),
-        &result,
-    );
+    diagnostics.managed_action_result("restart", &app_id, &result);
     result
 }
 
@@ -1166,31 +1175,6 @@ fn get_settings(
 fn open_logs(diagnostics: State<'_, Diagnostics>) -> Result<(), String> {
     let result = diagnostics.open_log_folder();
     record_failure(&diagnostics, "diagnostics", "open_logs", &result);
-    result
-}
-
-#[tauri::command]
-fn open_managed_app_logs(
-    app_id: String,
-    state: State<'_, AppState>,
-    diagnostics: State<'_, Diagnostics>,
-) -> Result<(), String> {
-    let exists = state
-        .apps
-        .lock()
-        .map_err(|_| "App registry lock is poisoned.".to_string())?
-        .iter()
-        .any(|app| app.id == app_id);
-    if !exists {
-        return Err("App was not found.".into());
-    }
-    let result = diagnostics.open_managed_log_folder(&app_id);
-    record_failure(
-        &diagnostics,
-        "managed_output",
-        &format!("action=open_logs appId={app_id}"),
-        &result,
-    );
     result
 }
 
@@ -1533,7 +1517,6 @@ pub fn run() {
             kill_listener_process,
             get_settings,
             open_logs,
-            open_managed_app_logs,
             update_settings,
             get_bubble_state,
             collapse_to_bubble,
@@ -1773,10 +1756,7 @@ mod tests {
         )
         .unwrap();
         let diagnostics = Diagnostics::new(root.join("logs")).unwrap();
-        let logs = diagnostics
-            .prepare_managed_logs("mac-smoke", "Mac Smoke")
-            .unwrap();
-        let mut child = spawn_managed("node server.mjs", root.to_str().unwrap(), &logs).unwrap();
+        let mut child = spawn_managed("node server.mjs", root.to_str().unwrap()).unwrap();
         let root_pid = child.id();
 
         let listener = (0..40)

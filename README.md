@@ -203,9 +203,9 @@ No source code from those projects is copied into Port Lens; they are interactio
 
 TCP listeners, Managed Apps, registration of already-running external listeners as monitoring-only Apps, verified runtime reattach, safe process control, friendly app identification, responsive desktop UI, tray residency, configurable compact bubble mode, English/Korean interface preferences, and Windows installer/portable packaging are implemented. UDP discovery and HTTP health checks remain future work. Lifecycle ownership is intentionally limited to Port Lens-started runtimes or runtimes that pass verified reattach checks.
 
-Managed App stdout/stderr rotate **during execution**: each stream retains its current
-5 MiB file and one previous 5 MiB file (20 MiB output history per App). Collectors
-continue after Port Lens exits. Already-running Apps from older versions need one
-Stop/Start to use this policy. Slow/failed storage can omit output; omission markers
-and a small `*.log.capture-status` warning in the App log folder describe this.
-See [retention behavior and Windows checks](docs/testing/managed-log-retention.md).
+Port Lens records its own Start/Stop/Restart requests, results and observed process
+exits in the rotating `port-lens.log`. It does not capture managed App stdout/stderr:
+commands launched by Port Lens send those streams to null devices. App-owned log
+files and explicit redirection in the configured command remain the App's choice.
+Closing Port Lens leaves the managed App running without a Port Lens log collector.
+See [lifecycle diagnostics and Windows checks](docs/testing/managed-lifecycle-diagnostics.md).

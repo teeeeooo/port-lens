@@ -1,5 +1,3 @@
-use crate::diagnostics::ManagedLogPaths;
-use crate::log_capture::Capture;
 use serde::Deserialize;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -31,34 +29,7 @@ pub struct ProcessSnapshot {
     pub creation_time: String,
 }
 
-pub struct ManagedChild {
-    child: Child,
-    stdout: Option<Capture>,
-    stderr: Option<Capture>,
-}
-
-impl ManagedChild {
-    pub fn id(&self) -> u32 {
-        self.child.id()
-    }
-    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.child.wait()
-    }
-    pub fn finish_logs(&mut self, footer: String) {
-        if let Some(stdout) = self.stdout.take() {
-            stdout.finish(String::new());
-        }
-        if let Some(stderr) = self.stderr.take() {
-            stderr.finish(footer);
-        }
-    }
-}
-
-pub fn spawn_managed(
-    command: &str,
-    cwd: &str,
-    logs: &ManagedLogPaths,
-) -> Result<ManagedChild, String> {
+pub fn spawn_managed(command: &str, cwd: &str) -> Result<Child, String> {
     if command.trim().is_empty() {
         return Err("Start command cannot be empty.".into());
     }
@@ -66,13 +37,8 @@ pub fn spawn_managed(
         return Err(format!("Working directory does not exist: {cwd}"));
     }
 
-    let stdout = Capture::start(&logs.stdout, &logs.header)
-        .map_err(|error| format!("Failed to start App stdout capture: {error}"))?;
-    let stderr = Capture::start(&logs.stderr, &logs.header)
-        .map_err(|error| format!("Failed to start App stderr capture: {error}"))?;
-    let stdout_stdio = stdout.stdio().map_err(|error| error.to_string())?;
-    let stderr_stdio = stderr.stdio().map_err(|error| error.to_string())?;
-
+    // App output belongs to the App. A null device has no Port Lens reader,
+    // log file or helper process to outlive the UI or break on UI shutdown.
     #[cfg(windows)]
     let child = {
         let mut cmd = Command::new("cmd.exe");
@@ -81,8 +47,8 @@ pub fn spawn_managed(
             .current_dir(cwd)
             .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
             .stdin(Stdio::null())
-            .stdout(stdout_stdio)
-            .stderr(stderr_stdio);
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         cmd.spawn()
     };
 
@@ -91,17 +57,11 @@ pub fn spawn_managed(
         .args(["-lc", command])
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .stdout(stdout_stdio)
-        .stderr(stderr_stdio)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn();
 
-    child
-        .map(|child| ManagedChild {
-            child,
-            stdout: Some(stdout),
-            stderr: Some(stderr),
-        })
-        .map_err(|error| format!("Failed to start command: {error}"))
+    child.map_err(|error| format!("Failed to start command: {error}"))
 }
 
 #[cfg(windows)]
@@ -292,7 +252,6 @@ fn guard_pid(pid: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::Diagnostics;
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -304,46 +263,125 @@ mod tests {
     }
 
     #[test]
-    fn managed_process_captures_stdout_and_stderr() {
+    fn managed_output_is_discarded_without_files_and_exit_code_is_preserved() {
+        let root = output_test_directory();
+        let legacy = root.join("logs/managed-apps/previous/stdout.log");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, "historical log").unwrap();
+        fs::write(
+            root.join("output.mjs"),
+            r#"
+            import fs from 'node:fs';
+            const chunk = 'x'.repeat(65536);
+            for (let i = 0; i < 128; i++) {
+                fs.writeSync(1, chunk);
+                fs.writeSync(2, chunk);
+            }
+            fs.writeFileSync('finished.txt', 'output completed');
+            process.exit(7);
+        "#,
+        )
+        .unwrap();
+        let mut child = spawn_managed("node output.mjs", root.to_str().unwrap()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = terminate_tree(child.id());
+                let _ = child.wait();
+                panic!("output producer blocked");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(
+            fs::read_to_string(root.join("finished.txt")).unwrap(),
+            "output completed"
+        );
+        assert_eq!(fs::read_to_string(&legacy).unwrap(), "historical log");
+        let mut names = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["finished.txt", "logs", "output.mjs"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn output_test_directory() -> std::path::PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("port-lens-capture-{nonce}"));
+        let root = std::env::temp_dir().join(format!("port-lens-no-capture-{nonce}"));
         fs::create_dir_all(&root).unwrap();
-        let diagnostics = Diagnostics::new(root.join("logs")).unwrap();
-        let logs = diagnostics
-            .prepare_managed_logs("capture-test", "Capture Test")
-            .unwrap();
-        let mut child = spawn_managed(
-            "echo port-lens-stdout && echo port-lens-stderr 1>&2",
-            root.to_str().unwrap(),
-            &logs,
+        root
+    }
+
+    #[test]
+    #[ignore = "subprocess entry invoked by managed_output_survives_launcher_exit"]
+    fn managed_output_launcher() {
+        let root = std::env::var("PORT_LENS_OUTPUT_TEST_DIR").unwrap();
+        spawn_managed("node output.mjs", &root).unwrap();
+        std::process::exit(0);
+    }
+
+    #[test]
+    fn managed_output_survives_launcher_exit() {
+        let root = output_test_directory();
+        fs::write(
+            root.join("output.mjs"),
+            r#"
+            import fs from 'node:fs';
+            setTimeout(() => {
+                fs.writeSync(1, 'stdout after launcher exit');
+                fs.writeSync(2, 'stderr after launcher exit');
+                fs.writeFileSync('finished.txt', 'still running');
+            }, 500);
+        "#,
         )
         .unwrap();
-        assert!(child.wait().unwrap().success());
-        child.finish_logs(crate::diagnostics::managed_process_exit_text(
-            child.id(),
-            Some(0),
-            25,
-            true,
-        ));
-
-        let mut captured = false;
-        for _ in 0..40 {
-            let stdout = fs::read_to_string(&logs.stdout).unwrap_or_default();
-            let stderr = fs::read_to_string(&logs.stderr).unwrap_or_default();
-            if stdout.contains("port-lens-stdout")
-                && stderr.contains("port-lens-stderr")
-                && stderr.contains("expected=true")
-            {
-                captured = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "process_control::tests::managed_output_launcher",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("PORT_LENS_OUTPUT_TEST_DIR", &root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while fs::read_to_string(root.join("finished.txt")).unwrap_or_default() != "still running" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "producer failed after launcher exit"
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(captured, "expected stdout and stderr markers in App logs");
-        let _ = fs::remove_dir_all(root);
+        // No capture files/helper are involved; these are the App's own files.
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        // The completion marker precedes Node's final exit. Windows may briefly
+        // retain its cwd handle; cleanup is not evidence of producer completion.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match fs::remove_dir_all(&root) {
+                Ok(()) => break,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("failed to clean test directory: {error}"),
+            }
+        }
     }
 
     #[test]
@@ -378,17 +416,13 @@ mod tests {
             "param([string]$OutputPath)\nSet-Content -LiteralPath $OutputPath -Value 'quoted-ok'\n",
         )
         .unwrap();
-        let diagnostics = Diagnostics::new(root.join("logs")).unwrap();
-        let logs = diagnostics
-            .prepare_managed_logs("quoted-command-test", "Quoted Command Test")
-            .unwrap();
         let command = format!(
             r#"powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{}" -OutputPath "{}""#,
             script.display(),
             marker.display()
         );
 
-        let mut child = spawn_managed(&command, root.to_str().unwrap(), &logs).unwrap();
+        let mut child = spawn_managed(&command, root.to_str().unwrap()).unwrap();
         assert!(child.wait().unwrap().success());
         assert_eq!(fs::read_to_string(&marker).unwrap().trim(), "quoted-ok");
         let _ = fs::remove_dir_all(root);
