@@ -4,113 +4,40 @@ Last updated: 2026-09-18
 
 ## Current baseline
 
-- product: Port Lens `0.3.1` Preview, Tauri/Rust + React/TypeScript
-- release tag: `v0.3.1`
-- release commit: `e32e9a95018e4556e733cb75b53c1a07e597dc49`
-- GitHub Release: **published / pre-release** on 2026-09-16
-- released default-branch baseline: `main` at `320fe90045ef60d021f88ab9646c8e8a952d5559`
-- release-time housekeeping (2026-09-16): no open PRs, extra branches, or worktrees
-- current audit candidate: `fix/product-audit-2026-09-18`, isolated worktree; not released
+- Product: Port Lens `0.3.2` Preview, Tauri/Rust + React/TypeScript.
+- Release tag: `v0.3.2`; release notes: `docs/releases/v0.3.2.md`.
+- Project status: **COMPLETE / no active work**, by user decision. Future work requires a new request.
+- PR #5 merged at `879fdc8`: purpose-audit fixes and compact lifecycle stabilization.
+- PR #6 merged at `d541dc4`: remove App stdout/stderr capture and retain lifecycle diagnostics.
+- Release preparation changes version metadata and documentation only; execution code matches user-validated candidate `0332413`.
 
-Recent merged milestones:
-- PR #3 — verified managed-runtime reattach and lifecycle hardening
-- PR #4 — compact registered-app hover, expanded-window restore fixes, and final compact drag stabilization
+## Validation evidence
 
-Final Windows runtime-validated integration commit before release: `680d18e9044c174e73c6f806b80f45d1a566eadb`. There are no `src/` or `src-tauri/src/` execution-code changes between that commit and the `v0.3.1` release commit.
+- User confirmed Windows drag validation for `066a688`, then Windows lifecycle-diagnostics validation for `0332413`: no issues reported; merge/release authorized.
+- Candidate CI `35292253583`: Windows and macOS PASS; frontend 26/26, Rust Windows 43 and macOS 42 tests passed. One internal subprocess test entry is intentionally ignored and invoked by a passing parent test.
+- Candidate Windows Bundle `35292252630`: NSIS, MSI and Portable PASS.
+- Release-specific CI, bundle runs and checksums are recorded on the GitHub Release. Candidate GUI validation is inherited; version-only release packages are not a separate manual GUI test.
 
-## Validation state
+## Product behavior and guardrails
 
-`v0.3.1` release gates:
-- local frontend production build: **PASS**
-- rustfmt: **PASS**
-- Clippy with `-D warnings`: **PASS**
-- Rust tests: **36/36 PASS**
-- GitHub CI run `35059809355`: Windows **PASS**, macOS **PASS**
-- Windows Bundle run `35060240844`: **PASS**
-- release assets uploaded: NSIS / MSI / Portable / `SHA256SUMS.txt`
+- Port Lens manages TCP listeners and registered Apps; it is not an App log storage service.
+- App stdout/stderr are not captured. App-owned logging and explicit redirection remain controlled by each App.
+- Start/Stop/Restart requests/results, process creation, listener/identity observations and observed exits are recorded in Port Lens's own rotating diagnostics (1 MiB threshold plus one previous file).
+- Quit leaves managed Apps alive without Port Lens log collectors. Existing old-version Apps must be stopped/restarted once to replace inherited output handles; historical log files are left untouched.
+- Action success is not an HTTP health check or proof of graceful shutdown.
+- Preserve verified runtime ownership, PID generation, creation-time and ancestry checks.
+- Preserve separate hover window, 4 px drag threshold, native cursor sampling, position-only movement, idle compact polling and drag-end catch-up.
+- Prior brief drag-start hitch remains an accepted residual; do not claim measured elimination. Native D1 redesign is deferred.
 
-Release artifact workflow IDs: Portable `10432077432`, NSIS `10432097263`, MSI `10431673891`.
+## Deferred scope
 
-Release SHA-256:
-- NSIS: `742dd65b6658346e917295369dffc02cbac69084080d01737c93b005adf35754`
-- MSI: `1e19e6ddff9c0c964febc4ba7bcd66efce610ed7fef154865ea83863ae1c04ac`
-- Portable: `ea458032b003e312fa7a2d7207fc9e347a948ef5b6ba9dc7b3781bab68ba4992`
-
-## Runtime status
-
-Validated behavior:
-- live TCP listener monitoring and Managed App state refresh
-- external listeners can be registered as persistent monitoring-only Apps
-- Start / Stop / Restart with managed ownership checks
-- verified runtime reattach after Port Lens restart
-- separate `compact-hover` window for registered-app hover content
-- compact `Open` restores the expanded window without the previous size-growth drift
-- compact polling remains active while idle and resumes with catch-up refresh after drag
-- hover is hidden at actual drag start rather than continuously tracked across windows
-- taskbar overlap/topmost behavior, saved compact position, mixed-DPI/multi-monitor handling, startup gating, and compact clipping are preserved
-
-### Accepted compact-drag residual
-
-The released drag baseline is **CLOSED / ACCEPTED RESIDUAL** at the D0.5 quality level. A user-requested compact lifecycle re-audit is active on PR #5; this does not establish that the native hitch is fixed.
-
-On the tested Windows machine, roughly 3 of 10 drag starts can show one short hitch/jump when monitoring/render work overlaps drag initiation. Once movement is underway:
-- no persistent cursor/window offset
-- no sustained pause/catch-up jump
-- micro-stutter is acceptable
-- idle polling and drag-end polling resume correctly
-- hover-visible drag → hide is correct
-- `Open` remains correct
-
-This residual is accepted for the current preview. The larger Windows-native D1 `SetCapture` state machine is deferred because its lifecycle/regression cost is disproportionate to the remaining symptom.
-
-## Guardrails
-
-- do not reopen `WM_NCLBUTTONDOWN` / `HTCAPTION` / `SC_MOVE` / Send-vs-Post / zero-lParam wake-up / `data-tauri-drag-region` tuning for the closed drag issue without new evidence
-- keep compact monitoring live; disabling polling for the entire compact state is not acceptable product behavior
-- preserve the separate hover-window architecture and the compact `Open` deadlock/restore fixes
-- preserve PR #3 runtime identity, creation-time, ancestry, and lifecycle-suppression checks
+All remaining A03–A08, N01–N03, CL-11/CL-12 and product expansion are unscheduled. Do not reopen them without a new user request. See `BACKLOG.md`.
 
 ## Evidence map
 
-- release summary: `docs/releases/v0.3.1.md`
-- `docs/audits/2026-09-15-compact-drag-hover-audit.md`
-- `docs/audits/2026-09-15-compact-drag-history-token-lens-audit.md`
-- `docs/audits/2026-09-15-compact-drag-poc-c-deep-audit.md`
+- `docs/releases/v0.3.2.md`
+- `docs/releases/v0.3.1.md` (historical release evidence)
+- `docs/testing/managed-lifecycle-diagnostics.md`
+- `docs/audits/2026-09-18-product-purpose-audit.md`
+- `docs/audits/2026-09-18-compact-window-lifecycle-audit.md`
 - `docs/audits/2026-09-15-compact-drag-poc-d-audit.md`
-
-## Next action
-
-`v0.3.1` release housekeeping remains complete; the released build is unchanged.
-
-The 2026-09-18 purpose audit has a separate candidate: full-inventory unmanaged Kill protection, nonblocking runtime probes with snapshot-safe pruning, five regression tests, and EN/KO close-behavior documentation corrections. Local macOS validation: frontend build PASS, Clippy `-D warnings` PASS, Rust tests **41/41 PASS**. Windows CI and native runtime evidence must be checked separately before merge/release. That parent commit did not change drag/window execution code. The subsequent compact lifecycle audit below does change those paths.
-
-Next: review the candidate and run the Windows regression gate in `docs/audits/2026-09-18-product-purpose-audit.md`. That audit records remaining scan correctness, persistence, operation concurrency, freshness, identity, process-query, and log-retention work. `BACKLOG.md` is the execution index. Native D1 remains evidence-gated; the user explicitly requested the compact lifecycle re-audit described below.
-
-## Lifecycle-diagnostics follow-up — 2026-09-18
-
-- PR #5 merged at `879fdc8` after user Windows drag PASS for `066a688`. Its CI and Windows Bundle passed. No new release published.
-- PR #6 remains separate and unmerged on `fix/managed-log-retention`. Its earlier collector candidate `12b2f2d` is superseded by the user's decision to remove automatic stdout/stderr capture entirely.
-- Current policy: App stdout/stderr go to null devices; App-owned logging/redirection stays with the App. No capture subprocess, pipe consumer, App log directory creation, file rotation, or App-specific Logs action remains.
-- Port Lens retains its own rotating diagnostic log, Start/Stop/Restart request/result events, process creation/PID, listener/identity observation, termination-command result, and observed exit code/elapsed time/expectedness. Action return success is not a health-check result or proof of graceful shutdown.
-- Port Lens shutdown leaves managed Apps alive but no Port Lens collectors. Already-running old-version Apps must be stopped/restarted once to replace their old output handles. Existing historical files are left untouched.
-- Windows manual validation belongs to the user. Deliver this candidate's CI and Windows Bundle, then leave PR #6 unmerged and do not release.
-- Test guide: `docs/testing/managed-lifecycle-diagnostics.md`. N01 onward remains deferred.
-
-## Current release decision — 2026-09-18
-
-- User scope: evaluate the existing purpose-audit + CL-01~CL-10 candidate, verify Windows drag behavior, then release if validation passes.
-- N01/N02/N03 and CL-11/CL-12 are deferred by user decision. They are not prerequisites for this release; do not open new implementation or instrumentation work for them.
-- Gate: candidate-specific Windows/macOS CI and Windows package build, then manual drag regression checks covering hover closed/open, polling boundaries, long/repeated gestures, cancellation, catch-up refresh, and ordinary Open/tray Open.
-- Preserve the accepted v0.3.1 brief drag-start hitch tolerance: release requires no material regression, no persistent offset/catch-up jump, and working hover/polling/Open. Do not claim hitch elimination without measurements.
-- Use the existing candidate worktree. Prepare a reviewable commit and Windows artifact; publish only after Windows manual validation passes. No native redesign or unrelated backlog work is included.
-- Latest local recheck: frontend 26/26 PASS, app/test TypeScript PASS, production build PASS, rustfmt PASS, diff whitespace check PASS. Rust tests/Clippy and Windows GUI are not validated by that local recheck.
-
-## Compact lifecycle follow-up — 2026-09-18
-
-- Handoff state before current release preparation: UNCOMMITTED follow-up on `fix/product-audit-2026-09-18` (parent `363e77b`); the previous commit/push attempt was blocked. Main and v0.3.1 are unchanged. Candidate commit, CI and bundle evidence will be recorded in the PR and workflow runs.
-- Implemented: drag session/refresh epoch guards, distinct release/cancel behavior, bounded per-gesture move queue, blur/Open cleanup, foreground loading settlement, independent inventory/monitored catch-up, pending-hover hide, nondecreasing render ACK, and persistence/hover ownership separation.
-- Native cursor sampling, position-only movement, separate hover window, 4px threshold and idle polling cadence are preserved. Already-issued invokes are not cancellable; the queue bound is per gesture.
-- Local frontend regressions **26/26 PASS**, app/test TypeScript PASS, production build PASS, rustfmt PASS. Local `cargo test` was blocked by disk exhaustion (ENOSPC, exit101); Clippy did not run in that chain. Only this worktree's generated target cache (1.3GiB) was cleaned.
-- Windows GUI/manual validation has NOT been performed for this candidate. Previous 36/41-test and Windows PASS records refer to their stated earlier commits, not this follow-up.
-- Deferred, outside this release: N01 native Open partial-failure recovery; N02 display/maximized restore; N03 stale keeper ordering; CL-11 hover document epochs; CL-12 conditional native session/latency instrumentation.
-- Handoff and Windows gate: `docs/audits/2026-09-18-compact-window-lifecycle-audit.md`.
