@@ -65,9 +65,6 @@ export const updateSettings = (patch: SettingsPatch) =>
 export const openLogs = () =>
   isDevMockMode ? mockOpenLogs() : invoke<void>("open_logs");
 
-export const openManagedAppLogs = (appId: string) =>
-  isDevMockMode ? mockOpenLogs() : invoke<void>("open_managed_app_logs", { appId });
-
 const mockBubbleState = (): BubbleState => ({
   collapsed: new URLSearchParams(window.location.search).get("bubble") === "1",
 });

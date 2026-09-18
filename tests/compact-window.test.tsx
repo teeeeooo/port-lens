@@ -7,7 +7,7 @@ const api = vi.hoisted(() => Object.fromEntries([
   "expandFromBubble", "getBubbleState", "getListeners", "getMonitoredListeners", "getSettings",
   "getManagedApps", "getManagedExits", "getManagedRuntimes", "killListenerProcess",
   "minimizeMainWindow", "moveCompactBubble", "showCompactHover", "hideCompactHover",
-  "openLogs", "openManagedAppLogs", "removeManagedApp", "restartManagedApp", "saveManagedApp",
+  "openLogs", "removeManagedApp", "restartManagedApp", "saveManagedApp",
   "startManagedApp", "stopManagedApp", "updateSettings",
 ].map(name => [name, vi.fn()])));
 const events = vi.hoisted(() => ({ listen: vi.fn(), emitTo: vi.fn() }));

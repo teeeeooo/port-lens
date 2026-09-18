@@ -197,3 +197,10 @@ Port Lens는 독립 구현이며 다음 프로젝트에서 interaction/architect
 ## 현재 범위
 
 TCP listener, Managed App, 이미 외부에서 실행 중인 listener의 monitoring-only App 등록, verified runtime reattach, 안전한 process 제어, friendly App identification, responsive UI, tray, 크기 조절 가능한 Compact Bubble, English/한국어 preference, Windows installer/Portable packaging이 구현되어 있습니다. UDP 탐지와 HTTP health check는 향후 범위입니다. Lifecycle ownership은 Port Lens가 직접 시작했거나 verified reattach 검사를 통과한 runtime에만 부여합니다.
+
+Port Lens는 Start/Stop/Restart 요청·결과와 관찰한 프로세스 종료를 회전하는
+`port-lens.log`에 기록합니다. 관리 App의 stdout/stderr는 자동 수집하지 않으며,
+Port Lens에서 실행한 명령의 해당 출력은 버립니다. App 자체 로그 파일과 명령에
+명시한 출력 리다이렉션은 그대로 해당 App이 관리합니다. Port Lens를 종료해도
+관리 App은 계속 실행되며, Port Lens 로그 수집기는 남지 않습니다.
+[진단 기록 및 Windows 검증 방법](docs/testing/managed-lifecycle-diagnostics.md)을 참고하세요.

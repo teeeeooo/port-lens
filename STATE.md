@@ -86,6 +86,16 @@ The 2026-09-18 purpose audit has a separate candidate: full-inventory unmanaged 
 
 Next: review the candidate and run the Windows regression gate in `docs/audits/2026-09-18-product-purpose-audit.md`. That audit records remaining scan correctness, persistence, operation concurrency, freshness, identity, process-query, and log-retention work. `BACKLOG.md` is the execution index. Native D1 remains evidence-gated; the user explicitly requested the compact lifecycle re-audit described below.
 
+## Lifecycle-diagnostics follow-up — 2026-09-18
+
+- PR #5 merged at `879fdc8` after user Windows drag PASS for `066a688`. Its CI and Windows Bundle passed. No new release published.
+- PR #6 remains separate and unmerged on `fix/managed-log-retention`. Its earlier collector candidate `12b2f2d` is superseded by the user's decision to remove automatic stdout/stderr capture entirely.
+- Current policy: App stdout/stderr go to null devices; App-owned logging/redirection stays with the App. No capture subprocess, pipe consumer, App log directory creation, file rotation, or App-specific Logs action remains.
+- Port Lens retains its own rotating diagnostic log, Start/Stop/Restart request/result events, process creation/PID, listener/identity observation, termination-command result, and observed exit code/elapsed time/expectedness. Action return success is not a health-check result or proof of graceful shutdown.
+- Port Lens shutdown leaves managed Apps alive but no Port Lens collectors. Already-running old-version Apps must be stopped/restarted once to replace their old output handles. Existing historical files are left untouched.
+- Windows manual validation belongs to the user. Deliver this candidate's CI and Windows Bundle, then leave PR #6 unmerged and do not release.
+- Test guide: `docs/testing/managed-lifecycle-diagnostics.md`. N01 onward remains deferred.
+
 ## Current release decision — 2026-09-18
 
 - User scope: evaluate the existing purpose-audit + CL-01~CL-10 candidate, verify Windows drag behavior, then release if validation passes.
