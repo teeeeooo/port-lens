@@ -52,6 +52,7 @@ const createDraft = (): ManagedApp => ({
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: "system",
+  theme: "system",
   bubbleScale: 1,
   compactModeEnabled: true,
 };
@@ -523,6 +524,12 @@ function App() {
     runtimesFingerprint.current = JSON.stringify(runtimes);
     exitsFingerprint.current = JSON.stringify(exits);
   }, [apps, exits, runtimes]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (settings.theme === "light" || settings.theme === "dark") root.dataset.theme = settings.theme;
+    else delete root.dataset.theme;
+  }, [settings.theme]);
 
   useEffect(() => {
     document.documentElement.lang = uiLanguage;

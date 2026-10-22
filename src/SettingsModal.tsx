@@ -48,6 +48,21 @@ export default function SettingsModal({ settings, language, onChange, onOpenLogs
 
         <div className="settings-row">
           <div>
+            <strong>Theme</strong>
+            <p>{t(language, "themeDescription")}</p>
+          </div>
+          <select
+            value={settings.theme ?? "system"}
+            onChange={(event) => void onChange({ theme: event.currentTarget.value as AppSettings["theme"] })}
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+
+        <div className="settings-row">
+          <div>
             <strong>Compact mode</strong>
             <p>{t(language, "compactModeDescription")}</p>
           </div>

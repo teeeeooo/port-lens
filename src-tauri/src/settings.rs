@@ -27,6 +27,7 @@ pub struct WindowPosition {
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     pub language: String,
+    pub theme: String,
     pub bubble_scale: f64,
     pub compact_mode_enabled: bool,
     pub expanded_bounds: Option<WindowBounds>,
@@ -40,6 +41,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             language: "system".to_owned(),
+            theme: "system".to_owned(),
             bubble_scale: 1.0,
             compact_mode_enabled: true,
             expanded_bounds: None,
@@ -54,6 +56,7 @@ impl Default for AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPatch {
     pub language: Option<String>,
+    pub theme: Option<String>,
     pub bubble_scale: Option<f64>,
     pub compact_mode_enabled: Option<bool>,
 }
@@ -101,6 +104,9 @@ impl SettingsStore {
             .map_err(|_| "Settings state lock is poisoned.".to_owned())?;
         if let Some(language) = patch.language {
             value.language = language;
+        }
+        if let Some(theme) = patch.theme {
+            value.theme = theme;
         }
         if let Some(scale) = patch.bubble_scale {
             value.bubble_scale = scale;
@@ -184,6 +190,9 @@ fn normalize_settings(mut value: AppSettings) -> AppSettings {
     if !matches!(value.language.as_str(), "system" | "en" | "ko") {
         value.language = "system".to_owned();
     }
+    if !matches!(value.theme.as_str(), "system" | "light" | "dark") {
+        value.theme = "system".to_owned();
+    }
     if !value.bubble_scale.is_finite() {
         value.bubble_scale = 1.0;
     }
@@ -218,9 +227,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn normalizes_language_bubble_scale_and_bounds() {
+    fn normalizes_language_theme_bubble_scale_and_bounds() {
         let settings = normalize_settings(AppSettings {
             language: "xx".into(),
+            theme: "sepia".into(),
             bubble_scale: 1.26,
             compact_mode_enabled: true,
             expanded_bounds: Some(WindowBounds {
@@ -234,6 +244,7 @@ mod tests {
             monitored_ports: vec![3101, 3000, 3101],
         });
         assert_eq!(settings.language, "system");
+        assert_eq!(settings.theme, "system");
         assert_eq!(settings.bubble_scale, 1.3);
         assert_eq!(settings.monitored_ports, vec![3000, 3101]);
         assert_eq!(settings.expanded_bounds.unwrap().width, 800.0);
@@ -246,6 +257,7 @@ mod tests {
             serde_json::from_str(r#"{"language":"ko","bubbleScale":1.2,"monitoredPorts":[3000]}"#)
                 .unwrap();
         assert_eq!(settings.language, "ko");
+        assert_eq!(settings.theme, "system");
         assert_eq!(settings.bubble_scale, 1.2);
         assert!(settings.compact_mode_enabled);
         assert_eq!(settings.monitored_ports, vec![3000]);
@@ -276,11 +288,13 @@ mod tests {
         let first = store
             .update(SettingsPatch {
                 language: Some("ko".into()),
+                theme: Some("dark".into()),
                 bubble_scale: Some(1.4),
                 compact_mode_enabled: Some(false),
             })
             .unwrap();
         assert_eq!(first.language, "ko");
+        assert_eq!(first.theme, "dark");
         assert_eq!(first.bubble_scale, 1.4);
         assert!(!first.compact_mode_enabled);
 
@@ -298,6 +312,7 @@ mod tests {
 
         let reloaded = SettingsStore::load(dir.clone(), diagnostics).unwrap();
         let value = reloaded.get().unwrap();
+        assert_eq!(value.theme, "dark");
         assert_eq!(value.expanded_bounds.unwrap().x, 100);
         assert!(value.expanded_bounds_are_inner);
         assert_eq!(value.compact_position.unwrap().x, 1400);

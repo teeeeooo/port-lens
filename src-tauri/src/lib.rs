@@ -20,7 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, Theme, WebviewWindow, WindowEvent};
 
 const BUBBLE_EVENT: &str = "port-lens://bubble-state";
 const REFRESH_EVENT: &str = "port-lens://refresh";
@@ -40,6 +40,21 @@ fn get_startup_ready(gate: State<'_, StartupGate>) -> bool {
 enum MinimizeTarget {
     Compact,
     Tray,
+}
+
+fn window_theme(theme: &str) -> Option<Theme> {
+    match theme {
+        "light" => Some(Theme::Light),
+        "dark" => Some(Theme::Dark),
+        _ => None,
+    }
+}
+
+// Keeps native chrome (title bar) in step with the in-app theme; `None` follows the OS.
+fn apply_window_theme(window: &WebviewWindow, settings: &AppSettings, diagnostics: &Diagnostics) {
+    if let Err(error) = window.set_theme(window_theme(&settings.theme)) {
+        diagnostics.record("WARN", "settings_theme", format!("error={error}"));
+    }
 }
 
 fn minimize_target(settings: &AppSettings) -> MinimizeTarget {
@@ -1189,6 +1204,9 @@ fn update_settings(
     let result = (|| {
         let previous = store.get()?;
         let settings = store.update(patch)?;
+        if previous.theme != settings.theme {
+            apply_window_theme(&window, &settings, &diagnostics);
+        }
         if previous.compact_mode_enabled
             && !settings.compact_mode_enabled
             && bubble::is_collapsed(&controller)?
@@ -1383,6 +1401,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let settings = app.state::<SettingsStore>();
                 window_state::restore_initial(&window, &settings)?;
+                apply_window_theme(&window, &settings.get()?, &app.state::<Diagnostics>());
             }
 
             let show_item = MenuItem::with_id(app, "show", "Open Port Lens", true, None::<&str>)?;

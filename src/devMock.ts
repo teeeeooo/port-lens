@@ -95,6 +95,7 @@ export async function mockKillListener(pid: number, port: number) {
 
 let mockSettings: AppSettings = {
   language: new URLSearchParams(window.location.search).get("lang") === "ko" ? "ko" : "en",
+  theme: "system",
   bubbleScale: Number(new URLSearchParams(window.location.search).get("bubbleScale") ?? "1") || 1,
   compactModeEnabled: true,
 };
