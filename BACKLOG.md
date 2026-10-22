@@ -15,7 +15,7 @@ Detailed scope, source locations, failure scenarios, and acceptance tests: `docs
 1. A03 (P1): fail-closed listener scan, explicit UTF-8/read errors, no-match versus provider failure.
 2. A04 (P1): atomic registry/settings persistence and publish-after-commit; preserve corrupt inputs for recovery.
 3. A05 (P1): per-App lifecycle/config operation gate and independent frontend busy state.
-4. A06/A07 (P1/P2): source-specific freshness/errors, common identity/status/count selectors.
+4. A06/A07 (P1/P2): source-specific freshness/errors, common identity/status/count selectors. Include the header "updated Ns ago" freshness indicator deferred from the 2026-10 Apps list UI redesign; show it only once per-source freshness is reliable.
 5. A08 (P1/P2): Unknown versus Exited process probes, bounded queries, remaining termination identity hardening; address safety-critical portions alongside A03.
 A09 is complete in PR #6: automatic App output capture removed; lifecycle diagnostics retained and user Windows validation passed.
 
