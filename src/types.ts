@@ -58,12 +58,14 @@ export interface CompactHoverPayload {
 
 export interface AppSettings {
   language: "system" | "en" | "ko";
+  theme: "system" | "light" | "dark";
   bubbleScale: number;
   compactModeEnabled: boolean;
 }
 
 export interface SettingsPatch {
   language?: AppSettings["language"];
+  theme?: AppSettings["theme"];
   bubbleScale?: number;
   compactModeEnabled?: boolean;
 }
