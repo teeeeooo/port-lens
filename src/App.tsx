@@ -1,7 +1,7 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   expandFromBubble,
   getBubbleState,
@@ -26,6 +26,7 @@ import {
 } from "./api";
 import { isDevMockMode } from "./devMock";
 import SettingsModal from "./SettingsModal";
+import Icon from "./Icons";
 import { localizeError, resolveLanguage, t } from "./i18n";
 import type { AppSettings, BubbleState, CompactHoverPayload, ListenerInfo, ManagedApp, ManagedExitInfo, ManagedRuntime, ManagedStatus } from "./types";
 import { createCompactMovePump, type CompactMovePump } from "./compactMovePump";
@@ -120,6 +121,88 @@ function inferredRuntimeLabel(listener: ListenerInfo) {
   return undefined;
 }
 
+type AppFilter = "all" | "running" | "issues" | "stopped";
+type AppGroup = "issue" | "running" | "online" | "stopped";
+type Tone = "ok" | "accent" | "warn" | "bad" | "idle";
+type ListenerFilter = "all" | "unregistered";
+
+const APP_FILTERS: Array<[AppFilter, string]> = [
+  ["all", "All"],
+  ["running", "Running"],
+  ["issues", "Issues"],
+  ["stopped", "Stopped"],
+];
+const GROUP_ORDER: Record<AppGroup, number> = { issue: 0, running: 1, online: 2, stopped: 3 };
+
+function appGroup(row: ManagedRow): AppGroup {
+  if (row.status === "changed" || (row.status === "offline" && row.lastExit?.earlyExit)) return "issue";
+  if (row.status === "running" || row.status === "starting") return "running";
+  return row.status === "online" ? "online" : "stopped";
+}
+
+function matchesAppFilter(group: AppGroup, filter: AppFilter) {
+  if (filter === "issues") return group === "issue";
+  if (filter === "running") return group === "running" || group === "online";
+  if (filter === "stopped") return group === "stopped";
+  return true;
+}
+
+function appStatusLine(row: ManagedRow): { label: string; detail?: string; tone: Tone } {
+  switch (row.status) {
+    case "starting":
+      return { label: "Starting…", tone: "accent" };
+    case "running":
+      return { label: "Running", detail: row.runtime?.reattached ? "reattached" : undefined, tone: "ok" };
+    case "online":
+      return {
+        label: "Online",
+        detail: row.recoveredManaged ? "unverified" : row.launchConfigured ? "started outside Port Lens" : "monitoring only",
+        tone: "ok",
+      };
+    case "changed":
+      return {
+        label: row.listener ? `Port taken by ${row.listener.processName} · ${row.listener.pid}` : "Different process",
+        tone: "warn",
+      };
+    default:
+      if (row.lastExit?.earlyExit) {
+        return {
+          label: `Exited · code ${row.lastExit.exitCode ?? "?"} after ${elapsedSeconds(row.lastExit.elapsedMs)}s`,
+          tone: "bad",
+        };
+      }
+      return row.launchConfigured
+        ? { label: "Stopped", tone: "idle" }
+        : { label: "Offline", detail: "monitoring only", tone: "idle" };
+  }
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // Some WebViews reject the async Clipboard API; fall back to a selection copy.
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand("copy");
+  area.remove();
+  if (!copied) throw new Error("Could not copy to the clipboard.");
+}
+
+const listenerKey = (listener: ListenerInfo) => `${listener.port}:${listener.pid}`;
+
+function isWildcardBind(address: string) {
+  const host = address.replace(/^\[|\]$/g, "");
+  return host === "0.0.0.0" || host === "::" || host === "*";
+}
+
 const HOVER_DATA_EVENT = "port-lens://compact-hover-data";
 const HOVER_PRESENCE_EVENT = "port-lens://compact-hover-presence";
 const HOVER_READY_EVENT = "port-lens://compact-hover-ready";
@@ -134,6 +217,14 @@ function App() {
   const [runtimes, setRuntimes] = useState<ManagedRuntime[]>([]);
   const [exits, setExits] = useState<ManagedExitInfo[]>([]);
   const [query, setQuery] = useState("");
+  const [appFilter, setAppFilter] = useState<AppFilter>("all");
+  const [listenerFilter, setListenerFilter] = useState<ListenerFilter>("all");
+  const [expandedApps, setExpandedApps] = useState<ReadonlySet<string>>(() => new Set());
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [copiedAppId, setCopiedAppId] = useState<string | null>(null);
+  const [ownerRequest, setOwnerRequest] = useState<{ key: string; at: number } | null>(null);
+  const [flashListenerKey, setFlashListenerKey] = useState<string | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -558,7 +649,32 @@ function App() {
     return { primary: listener.processName, secondary: undefined, kind: "process" as const };
   }, [managedRows]);
 
-  const filteredListeners = useMemo(() => {
+  const searchedApps = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return managedRows
+      .map((row, index) => ({ row, index, group: appGroup(row) }))
+      .filter(({ row }) => !needle || [
+        row.name,
+        row.port,
+        row.command,
+        row.cwd,
+        row.listener?.processName,
+        row.listener?.pid,
+      ].join(" ").toLowerCase().includes(needle))
+      .sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group] || a.index - b.index);
+  }, [managedRows, query]);
+
+  const appCounts = useMemo(() => Object.fromEntries(APP_FILTERS.map(([filter]) => [
+    filter,
+    searchedApps.filter(({ group }) => matchesAppFilter(group, filter)).length,
+  ])) as Record<AppFilter, number>, [searchedApps]);
+
+  const visibleApps = useMemo(
+    () => searchedApps.filter(({ group }) => matchesAppFilter(group, appFilter)),
+    [appFilter, searchedApps],
+  );
+
+  const searchedListeners = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return listeners;
     return listeners.filter((listener) => {
@@ -575,7 +691,108 @@ function App() {
     });
   }, [listeners, presentationFor, query]);
 
+  const registeredPorts = useMemo(() => new Set(apps.map((app) => app.port)), [apps]);
+  const unregisteredListenerCount = searchedListeners.filter((listener) => !registeredPorts.has(listener.port)).length;
+  const filteredListeners = listenerFilter === "unregistered"
+    ? searchedListeners.filter((listener) => !registeredPorts.has(listener.port))
+    : searchedListeners;
+  const conflictListenerKeys = useMemo(() => new Set(
+    managedRows
+      .filter((row) => row.identityChanged && row.listener)
+      .map((row) => listenerKey(row.listener!)),
+  ), [managedRows]);
+
+  const toggleExpanded = (appId: string) => setExpandedApps((current) => {
+    const next = new Set(current);
+    if (!next.delete(appId)) next.add(appId);
+    return next;
+  });
+
+  const showListenerOwner = (listener: ListenerInfo) => {
+    const key = listenerKey(listener);
+    if (!filteredListeners.some((item) => listenerKey(item) === key)) {
+      // Make sure neither the search nor the Unregistered filter hides the owner row.
+      setQuery("");
+      setListenerFilter("all");
+      if (!listeners.some((item) => listenerKey(item) === key)) void refreshInventory(true);
+    }
+    setOwnerRequest({ key, at: Date.now() });
+  };
+
+  useEffect(() => {
+    if (!ownerRequest) return;
+    if (Date.now() - ownerRequest.at > 5_000) {
+      setOwnerRequest(null);
+      return;
+    }
+    const row = document.querySelector(`[data-listener-key="${ownerRequest.key}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    setFlashListenerKey(ownerRequest.key);
+    setOwnerRequest(null);
+  }, [filteredListeners, ownerRequest]);
+
+  useEffect(() => {
+    if (!flashListenerKey) return;
+    const timer = window.setTimeout(() => setFlashListenerKey(null), 1_600);
+    return () => window.clearTimeout(timer);
+  }, [flashListenerKey]);
+
+  const copyCommand = async (app: ManagedRow) => {
+    try {
+      await copyText(app.command ?? "");
+      setCopiedAppId(app.id);
+      window.setTimeout(() => {
+        setCopiedAppId((current) => current === app.id ? null : current);
+        setOpenMenu((current) => current === app.id ? null : current);
+      }, 900);
+    } catch (copyError) {
+      setOpenMenu(null);
+      setError(messageOf(copyError));
+    }
+  };
+
+  const openFolder = async (app: ManagedRow) => {
+    setOpenMenu(null);
+    if (!app.cwd) return;
+    try {
+      await revealItemInDir(app.cwd);
+    } catch (folderError) {
+      setError(messageOf(folderError));
+    }
+  };
+
+  useEffect(() => {
+    if (!openMenu) return;
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!(event.target as Element).closest?.(".row-menu")) setOpenMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenMenu(null);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openMenu]);
+
+  const modalOpen = Boolean(draft || settingsOpen || killTarget);
+  useEffect(() => {
+    if (bubbleMode || modalOpen) return;
+    const focusSearch = (event: KeyboardEvent) => {
+      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+      if ((event.target as Element).closest?.("input, textarea, select, [contenteditable='true']")) return;
+      event.preventDefault();
+      searchInput.current?.focus();
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, [bubbleMode, modalOpen]);
+
   const runningCount = managedRows.filter((row) => row.status === "running" || row.status === "starting").length;
+  const issueCount = managedRows.filter((row) => appGroup(row) === "issue").length;
   const onlineAppCount = managedRows.filter((row) => row.listener).length;
   const compactHoverData = useMemo<Omit<CompactHoverPayload, "revision">>(() => ({
     apps: managedRows.map((app) => ({
@@ -1015,234 +1232,383 @@ function App() {
       <header className="topbar">
         <div className="brand-lockup">
           <img className="brand-mark" src="/port-lens.svg" alt="" aria-hidden="true" />
-          <div>
-            <div className="eyebrow">LOCAL DEVELOPMENT</div>
-            <h1>Port Lens</h1>
-            <p>{t(uiLanguage, "headerDescription")}</p>
-          </div>
+          <h1>Port Lens</h1>
+        </div>
+        <label className="search-box">
+          <Icon name="search" />
+          <input
+            ref={searchInput}
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              setQuery("");
+              event.currentTarget.blur();
+            }}
+            placeholder="Search apps, ports, PIDs"
+            aria-label="Search apps and listening ports"
+          />
+          <kbd aria-hidden="true">/</kbd>
+        </label>
+        <div className="topbar-stats">
+          <span><span className="status-dot running" />{runningCount} running</span>
+          {issueCount > 0 && (
+            <span><span className="status-dot changed" />{issueCount} {issueCount === 1 ? "issue" : "issues"}</span>
+          )}
+          <span><span className="status-dot" />{listeners.length} ports</span>
         </div>
         <div className="topbar-actions">
-          <div className="summary-pill">
-            <span className="status-dot running" />
-            {runningCount} running
-          </div>
-          <div className="summary-pill">{listeners.length} listeners</div>
-          <div className="summary-pill">{onlineAppCount}/{apps.length} apps online</div>
-          <button className="secondary-button" onClick={() => void minimizeWindow()}>
-            Minimize
+          <button className="icon-button" onClick={() => void refreshAll()} disabled={loading} title="Refresh">
+            <Icon name="refresh" />
+            <span className="sr-only">{loading ? "Refreshing…" : "Refresh"}</span>
           </button>
-          <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
-            Settings
+          <button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings">
+            <Icon name="settings" />
+            <span className="sr-only">Settings</span>
           </button>
-          <button className="secondary-button" onClick={() => void refreshAll()} disabled={loading}>
-            {loading ? "Refreshing…" : "Refresh"}
+          <button className="icon-button" onClick={() => void minimizeWindow()} title="Minimize">
+            <Icon name="compact" />
+            <span className="sr-only">Minimize</span>
           </button>
         </div>
       </header>
 
-      {error && (
-        <div className="error-banner" role="alert">
-          <span>{localizeError(uiLanguage, error)}</span>
-          <button onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      )}
-
-      <section className="panel managed-panel">
-        <div className="section-header">
-          <div>
-            <h2>Apps</h2>
-            <p>{t(uiLanguage, "managedDescription")}</p>
-          </div>
-          <button className="primary-button" onClick={() => setDraft(createDraft())}>
-            Add app
-          </button>
-        </div>
-
-        {managedRows.length === 0 ? (
-          <div className="monitor-empty">
-            <strong>{t(uiLanguage, "emptyTitle")}</strong>
-            <span>{t(uiLanguage, "emptyDescription")}</span>
-          </div>
-        ) : (
-          <div className="managed-grid">
-            {managedRows.map((app) => {
-              const appBusy = busy?.includes(app.id) ?? false;
-              const stateLabel = app.status === "running"
-                ? "Running"
-                : app.status === "starting"
-                  ? "Starting"
-                  : app.status === "online"
-                    ? "Online"
-                    : app.status === "changed"
-                      ? "Different process"
-                      : "Offline";
-              const canStart = app.launchConfigured && app.status === "offline" && !app.runtime;
-              const canRestart = app.launchConfigured && Boolean(app.runtime);
-              return (
-                <article className={`managed-card ${app.status}`} key={app.id}>
-                  <div className="managed-card-head">
-                    <div>
-                      <div className="app-title-row">
-                        <span className={`status-dot ${app.status}`} />
-                        <h3>{app.name}</h3>
-                      </div>
-                      <span className={`status-label ${app.status}`}>{stateLabel}</span>
-                    </div>
-                    <button
-                      className="icon-button"
-                      aria-label={`Edit ${app.name}`}
-                      disabled={Boolean(app.runtime)}
-                      title={app.runtime ? "Stop this App before editing its launch settings" : "Edit App"}
-                      onClick={() => setDraft({ ...app })}
-                    >
-                      Edit
-                    </button>
-                  </div>
-                  <div className="app-meta">
-                    <div><span>Port</span><strong>{app.port}</strong></div>
-                    <div><span>Process</span><strong>{app.listener?.processName ?? app.lastProcessName ?? "—"}</strong></div>
-                    <div><span>PID</span><strong>{app.listener?.pid ?? app.runtime?.rootPid ?? "—"}</strong></div>
-                  </div>
-                  {app.launchConfigured ? (
-                    <>
-                      <div className="command-line" title={app.command}>{app.command}</div>
-                      <div className="cwd-line" title={app.cwd}>{app.cwd}</div>
-                    </>
-                  ) : (
-                    <div className="launch-note">{t(uiLanguage, "monitoringOnlyNote")}</div>
-                  )}
-
-                  {app.identityChanged && app.listener && (
-                    <div className="conflict-note">{t(uiLanguage, "differentProcessWarning")}</div>
-                  )}
-
-                  {app.recoveredManaged && !appBusy && (
-                    <div className="managed-origin-note">{t(uiLanguage, "previouslyManagedNote")}</div>
-                  )}
-
-                  {app.runtime?.reattached && !appBusy && (
-                    <div className="managed-origin-note">{t(uiLanguage, "reattachedManagedNote")}</div>
-                  )}
-
-                  {app.lastExit && !app.runtime && (
-                    <div className={`exit-note ${app.lastExit.earlyExit ? "early" : ""}`}>
-                      {t(uiLanguage, app.lastExit.earlyExit ? "earlyExitNotice" : "lastExitNotice", {
-                        code: app.lastExit.exitCode ?? "?",
-                        seconds: elapsedSeconds(app.lastExit.elapsedMs),
-                      })}
-                    </div>
-                  )}
-
-                  <div className="card-actions">
-                    {app.runtime ? (
-                      <>
-                        <button disabled={appBusy || !canRestart} onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id), true)}>
-                          Restart
-                        </button>
-                        <button className="danger-soft" disabled={appBusy} onClick={() => void perform(`stop:${app.id}`, () => stopManagedApp(app.id), true)}>
-                          Stop
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="primary-button"
-                        disabled={appBusy || !canStart}
-                        title={!app.launchConfigured ? "Configure launch settings in Edit" : app.listener ? "Port is already online" : "Start app"}
-                        onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id), true)}
-                      >
-                        Start
-                      </button>
-                    )}
-                    <button disabled={!app.listener} onClick={() => void openUrl(`http://localhost:${app.port}`)}>
-                      Open
-                    </button>
-                    <button className="ghost-button" disabled={Boolean(app.runtime)} onClick={() => void deleteApp(app)}>
-                      Remove
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
+      <div className="content">
+        {error && (
+          <div className="error-banner" role="alert">
+            <Icon name="alertCircle" />
+            <span>{localizeError(uiLanguage, error)}</span>
+            <button className="ghost-button" onClick={() => setError(null)}>Dismiss</button>
           </div>
         )}
-      </section>
 
-      <section className="panel listeners-panel">
-        <div className="section-header listeners-heading">
-          <div>
-            <h2>Listening ports</h2>
-            <p>{t(uiLanguage, "listenersDescription")}</p>
+        <section className="content-section">
+          <div className="section-header">
+            <h2 title={t(uiLanguage, "managedDescription")}>Apps</h2>
+            {managedRows.length > 0 && (
+              <div className="segmented" role="group" aria-label="Filter apps">
+                {APP_FILTERS.map(([value, label]) => (
+                  <button
+                    key={value}
+                    className={appFilter === value ? "active" : undefined}
+                    aria-pressed={appFilter === value}
+                    onClick={() => setAppFilter(value)}
+                  >
+                    {label}<span className="count">{appCounts[value]}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <button className="primary-button add-button" onClick={() => setDraft(createDraft())}>
+              <Icon name="plus" />Add app
+            </button>
           </div>
-          <label className="search-box">
-            <span>Search</span>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="Port, PID, process, address…"
-            />
-          </label>
-        </div>
 
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Port</th>
-                <th>App / Process</th>
-                <th>PID</th>
-                <th>Bind</th>
-                <th>Protocol</th>
-                <th className="action-column">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredListeners.map((listener) => {
-                const presentation = presentationFor(listener);
-                const registered = apps.some((app) => app.port === listener.port);
-                const portLensRuntime = managedRows.some(
-                  (app) => Boolean(app.runtime) && app.port === listener.port,
-                );
+          {managedRows.length === 0 ? (
+            <div className="list list-empty">
+              <strong>{t(uiLanguage, "emptyTitle")}</strong>
+              <span>{t(uiLanguage, "emptyDescription")}</span>
+            </div>
+          ) : visibleApps.length === 0 ? (
+            <div className="list list-empty">
+              <span>No apps match this view.</span>
+            </div>
+          ) : (
+            <div className="list app-list">
+              {visibleApps.map(({ row: app }) => {
+                const appBusy = busy?.includes(app.id) ?? false;
+                const expanded = expandedApps.has(app.id);
+                const statusLine = appStatusLine(app);
+                const canStart = app.launchConfigured && app.status === "offline" && !app.runtime;
+                const canRestart = app.launchConfigured && Boolean(app.runtime);
+                const detailId = `app-detail-${app.id}`;
+                const url = `http://localhost:${app.port}`;
                 return (
-                  <tr key={`${listener.protocol}-${listener.localAddress}-${listener.port}-${listener.pid}`}>
-                    <td><span className="port-chip">:{listener.port}</span></td>
-                    <td className="process-cell" title={listener.commandLine ?? listener.processName}>
-                      <span className="process-primary">{presentation.primary}</span>
-                      {presentation.secondary && (
-                        <span className="process-secondary">{presentation.secondary}</span>
-                      )}
-                    </td>
-                    <td className="mono-cell">{listener.pid}</td>
-                    <td className="mono-cell muted-cell">{listener.localAddress}</td>
-                    <td><span className="protocol-chip">{listener.protocol}</span></td>
-                    <td className="action-column"><div className="action-group">
+                  <div className={`app-item${expanded ? " expanded" : ""}`} key={app.id}>
+                    <div
+                      className="app-row"
+                      onClick={(event) => {
+                        if ((event.target as Element).closest("button, .row-menu")) return;
+                        toggleExpanded(app.id);
+                      }}
+                    >
                       <button
-                        className={registered ? "monitor-button active" : "monitor-button"}
-                        disabled={registered || busy === `register:${listener.port}`}
-                        onClick={() => void registerListener(listener)}
+                        className="expand-toggle"
+                        aria-expanded={expanded}
+                        aria-controls={detailId}
+                        aria-label={`${expanded ? "Collapse" : "Expand"} ${app.name}`}
+                        onClick={() => toggleExpanded(app.id)}
                       >
-                        {registered ? "Registered" : "Register"}
+                        <Icon name="chevronRight" size={14} />
                       </button>
-                      <button
-                        className="danger-link"
-                        disabled={portLensRuntime || busy === `kill:${listener.pid}`}
-                        title={portLensRuntime ? "Use the App Stop action" : "Terminate this process"}
-                        onClick={() => setKillTarget(listener)}
-                      >
-                        Kill
-                      </button>
-                    </div></td>
-                  </tr>
+                      <span className={`port-tile ${statusLine.tone}`}>{app.port}</span>
+                      <div className="app-identity">
+                        <div className="app-name">{app.name}</div>
+                        <div className={`app-status ${statusLine.tone}`}>
+                          {statusLine.label}
+                          {statusLine.detail && <span> · {statusLine.detail}</span>}
+                        </div>
+                      </div>
+                      <span className="app-process">
+                        {app.listener
+                          ? `${app.listener.processName} · ${app.listener.pid}`
+                          : app.runtime ? `PID ${app.runtime.rootPid}` : "—"}
+                      </span>
+                      <span className={`app-command${app.launchConfigured ? "" : " empty"}`} title={app.command}>
+                        {app.launchConfigured ? app.command : "No start command"}
+                      </span>
+                      <div className="row-actions">
+                        {app.runtime ? (
+                          <>
+                            <button className="danger-soft" disabled={appBusy} onClick={() => void perform(`stop:${app.id}`, () => stopManagedApp(app.id), true)}>
+                              <Icon name="stop" size={13} />Stop
+                            </button>
+                            <button
+                              className="icon-button bordered"
+                              aria-label={`Restart ${app.name}`}
+                              title="Restart"
+                              disabled={appBusy || !canRestart}
+                              onClick={() => void perform(`restart:${app.id}`, () => restartManagedApp(app.id), true)}
+                            >
+                              <Icon name="restart" />
+                            </button>
+                          </>
+                        ) : canStart && (
+                          <button className="primary-button" disabled={appBusy} onClick={() => void perform(`start:${app.id}`, () => startManagedApp(app.id), true)}>
+                            <Icon name="play" size={13} />Start
+                          </button>
+                        )}
+                        {app.identityChanged && app.listener && (
+                          <button
+                            title={`Find PID ${app.listener.pid} in Listening ports`}
+                            onClick={() => showListenerOwner(app.listener!)}
+                          >
+                            <Icon name="arrowDown" size={13} />Show owner
+                          </button>
+                        )}
+                        {app.listener && !app.identityChanged && (
+                          <button className="icon-button bordered" aria-label={`Open ${app.name} in browser`} title={`Open ${url}`} onClick={() => void openUrl(url)}>
+                            <Icon name="arrowUpRight" />
+                          </button>
+                        )}
+                        <div className="row-menu">
+                          <button
+                            className={`icon-button${openMenu === app.id ? " active" : ""}`}
+                            aria-label={`More actions for ${app.name}`}
+                            aria-haspopup="menu"
+                            aria-expanded={openMenu === app.id}
+                            onClick={() => setOpenMenu((current) => current === app.id ? null : app.id)}
+                          >
+                            <Icon name="dots" />
+                          </button>
+                          {openMenu === app.id && (
+                            <div className="menu-popover" role="menu">
+                              <button
+                                role="menuitem"
+                                disabled={Boolean(app.runtime)}
+                                title={app.runtime ? "Stop this App before editing its launch settings" : undefined}
+                                onClick={() => {
+                                  setOpenMenu(null);
+                                  setDraft({ ...app });
+                                }}
+                              >
+                                <Icon name="pencil" />Edit
+                              </button>
+                              <button
+                                role="menuitem"
+                                disabled={!app.launchConfigured}
+                                title={app.launchConfigured ? undefined : "No start command configured"}
+                                onClick={() => void copyCommand(app)}
+                              >
+                                {copiedAppId === app.id
+                                  ? <><Icon name="check" />Copied</>
+                                  : <><Icon name="copy" />Copy command</>}
+                              </button>
+                              <button
+                                role="menuitem"
+                                disabled={!app.launchConfigured}
+                                title={app.launchConfigured ? app.cwd : "No working directory configured"}
+                                onClick={() => void openFolder(app)}
+                              >
+                                <Icon name="folder" />Open folder
+                              </button>
+                              <div className="menu-separator" />
+                              <button
+                                role="menuitem"
+                                className="danger-soft"
+                                disabled={Boolean(app.runtime)}
+                                title={app.runtime ? "Stop this App before removing it" : undefined}
+                                onClick={() => {
+                                  setOpenMenu(null);
+                                  void deleteApp(app);
+                                }}
+                              >
+                                <Icon name="trash" />Remove
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {expanded && (
+                      <div className="app-detail" id={detailId}>
+                        {app.identityChanged && app.listener && (
+                          <div className="note warn"><Icon name="alertTriangle" />{t(uiLanguage, "differentProcessWarning")}</div>
+                        )}
+                        {app.lastExit && !app.runtime && (
+                          <div className={`note ${app.lastExit.earlyExit ? "bad" : "neutral"}`}>
+                            <Icon name={app.lastExit.earlyExit ? "alertCircle" : "info"} />
+                            {t(uiLanguage, app.lastExit.earlyExit ? "earlyExitNotice" : "lastExitNotice", {
+                              code: app.lastExit.exitCode ?? "?",
+                              seconds: elapsedSeconds(app.lastExit.elapsedMs),
+                            })}
+                          </div>
+                        )}
+                        {app.recoveredManaged && !appBusy && (
+                          <div className="note neutral"><Icon name="info" />{t(uiLanguage, "previouslyManagedNote")}</div>
+                        )}
+                        {app.runtime?.reattached && !appBusy && (
+                          <div className="note neutral"><Icon name="info" />{t(uiLanguage, "reattachedManagedNote")}</div>
+                        )}
+                        {!app.launchConfigured && (
+                          <div className="note neutral"><Icon name="info" />{t(uiLanguage, "monitoringOnlyNote")}</div>
+                        )}
+                        <dl className="detail-grid">
+                          {app.launchConfigured && (
+                            <>
+                              <dt>Command</dt><dd className="mono">{app.command}</dd>
+                              <dt>Folder</dt><dd className="mono">{app.cwd}</dd>
+                            </>
+                          )}
+                          <dt>Listener</dt>
+                          <dd>
+                            {app.listener
+                              ? `${app.listener.processName} · PID ${app.listener.pid} · ${app.listener.localAddress}`
+                              : "Not listening"}
+                          </dd>
+                          <dt>URL</dt>
+                          <dd>
+                            {app.listener
+                              ? <button className="link-button mono" onClick={() => void openUrl(url)}>{url}</button>
+                              : <span className="mono muted">{url}</span>}
+                          </dd>
+                        </dl>
+                      </div>
+                    )}
+                  </div>
                 );
               })}
-              {!loading && filteredListeners.length === 0 && (
+            </div>
+          )}
+        </section>
+
+        <section className="content-section">
+          <div className="section-header">
+            <h2 title={t(uiLanguage, "listenersDescription")}>Listening ports</h2>
+            <div className="segmented" role="group" aria-label="Filter listening ports">
+              <button
+                className={listenerFilter === "all" ? "active" : undefined}
+                aria-pressed={listenerFilter === "all"}
+                onClick={() => setListenerFilter("all")}
+              >
+                All<span className="count">{searchedListeners.length}</span>
+              </button>
+              <button
+                className={listenerFilter === "unregistered" ? "active" : undefined}
+                aria-pressed={listenerFilter === "unregistered"}
+                onClick={() => setListenerFilter("unregistered")}
+              >
+                Unregistered<span className="count">{unregisteredListenerCount}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="list table-wrap">
+            <table>
+              <thead>
                 <tr>
-                  <td colSpan={6} className="table-empty">No matching listeners.</td>
+                  <th>Port</th>
+                  <th>Process</th>
+                  <th>PID</th>
+                  <th>Bind</th>
+                  <th className="action-column"><span className="sr-only">Actions</span></th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              </thead>
+              <tbody>
+                {filteredListeners.map((listener) => {
+                  const presentation = presentationFor(listener);
+                  const registered = registeredPorts.has(listener.port);
+                  const portLensRuntime = managedRows.some(
+                    (app) => Boolean(app.runtime) && app.port === listener.port,
+                  );
+                  const key = listenerKey(listener);
+                  const rowClass = [
+                    conflictListenerKeys.has(key) && "conflict",
+                    flashListenerKey === key && "flash",
+                  ].filter(Boolean).join(" ");
+                  return (
+                    <tr
+                      key={`${listener.protocol}-${listener.localAddress}-${listener.port}-${listener.pid}`}
+                      className={rowClass || undefined}
+                      data-listener-key={key}
+                    >
+                      <td><span className={`port-tile small ${presentation.kind === "managed" ? "ok" : "idle"}`}>{listener.port}</span></td>
+                      <td className="process-cell" title={listener.commandLine ?? listener.processName}>
+                        <span className="process-primary">{presentation.primary}</span>
+                        {presentation.secondary && (
+                          <span className="process-secondary"> · {presentation.secondary}</span>
+                        )}
+                      </td>
+                      <td className="mono-cell muted-cell">{listener.pid}</td>
+                      <td>
+                        <span className="bind-cell">
+                          <span className="mono-cell muted-cell">{listener.localAddress}</span>
+                          {isWildcardBind(listener.localAddress) && (
+                            <span className="lan-badge" title="Reachable from other devices on your network">LAN</span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="action-column"><div className="action-group">
+                        {portLensRuntime ? (
+                          <span className="row-tag" title="Use the App Stop action"><Icon name="lock" size={13} />Managed</span>
+                        ) : (
+                          <>
+                            {registered ? (
+                              <span className="row-tag"><Icon name="check" size={13} />Registered</span>
+                            ) : (
+                              <button
+                                className="ghost-button"
+                                disabled={busy === `register:${listener.port}`}
+                                onClick={() => void registerListener(listener)}
+                              >
+                                <Icon name="plus" size={13} />Register
+                              </button>
+                            )}
+                            <button
+                              className="kill-button"
+                              disabled={busy === `kill:${listener.pid}`}
+                              title="Terminate this process"
+                              onClick={() => setKillTarget(listener)}
+                            >
+                              Kill
+                            </button>
+                          </>
+                        )}
+                      </div></td>
+                    </tr>
+                  );
+                })}
+                {!loading && filteredListeners.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="table-empty">No matching listeners.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
 
       {draft && (
         <div className="modal-backdrop" onMouseDown={() => setDraft(null)}>

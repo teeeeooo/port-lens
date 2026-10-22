@@ -86,6 +86,7 @@ export function localizeError(language: UiLanguage, message: string) {
     "Stop this app before editing its configuration.": "이 App의 설정을 변경하려면 먼저 Stop하세요.",
     "Stop this app before removing it.": "이 App을 제거하려면 먼저 Stop하세요.",
     "App was not found.": "등록된 App을 찾을 수 없습니다.",
+    "Could not copy to the clipboard.": "클립보드에 복사하지 못했습니다.",
     "This app was not started by Port Lens in the current session.": "이 App은 현재 세션에서 Port Lens가 시작한 process가 아닙니다.",
     "The selected listener changed. Refresh the list and try again.": "선택한 listener 상태가 변경되었습니다. Refresh 후 다시 시도하세요.",
     "Use the App Stop action for processes started by Port Lens.": "Port Lens가 시작한 process는 App의 Stop을 사용하세요.",
