@@ -1,7 +1,7 @@
 import { FormEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   expandFromBubble,
   getBubbleState,
@@ -177,6 +177,27 @@ function appStatusLine(row: ManagedRow): { label: string; detail?: string; tone:
   }
 }
 
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // Some WebViews reject the async Clipboard API; fall back to a selection copy.
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand("copy");
+  area.remove();
+  if (!copied) throw new Error("Could not copy to the clipboard.");
+}
+
+const listenerKey = (listener: ListenerInfo) => `${listener.port}:${listener.pid}`;
+
 function isWildcardBind(address: string) {
   const host = address.replace(/^\[|\]$/g, "");
   return host === "0.0.0.0" || host === "::" || host === "*";
@@ -200,6 +221,9 @@ function App() {
   const [listenerFilter, setListenerFilter] = useState<ListenerFilter>("all");
   const [expandedApps, setExpandedApps] = useState<ReadonlySet<string>>(() => new Set());
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [copiedAppId, setCopiedAppId] = useState<string | null>(null);
+  const [ownerRequest, setOwnerRequest] = useState<{ key: string; at: number } | null>(null);
+  const [flashListenerKey, setFlashListenerKey] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -675,7 +699,7 @@ function App() {
   const conflictListenerKeys = useMemo(() => new Set(
     managedRows
       .filter((row) => row.identityChanged && row.listener)
-      .map((row) => `${row.listener!.port}:${row.listener!.pid}`),
+      .map((row) => listenerKey(row.listener!)),
   ), [managedRows]);
 
   const toggleExpanded = (appId: string) => setExpandedApps((current) => {
@@ -683,6 +707,60 @@ function App() {
     if (!next.delete(appId)) next.add(appId);
     return next;
   });
+
+  const showListenerOwner = (listener: ListenerInfo) => {
+    const key = listenerKey(listener);
+    if (!filteredListeners.some((item) => listenerKey(item) === key)) {
+      // Make sure neither the search nor the Unregistered filter hides the owner row.
+      setQuery("");
+      setListenerFilter("all");
+      if (!listeners.some((item) => listenerKey(item) === key)) void refreshInventory(true);
+    }
+    setOwnerRequest({ key, at: Date.now() });
+  };
+
+  useEffect(() => {
+    if (!ownerRequest) return;
+    if (Date.now() - ownerRequest.at > 5_000) {
+      setOwnerRequest(null);
+      return;
+    }
+    const row = document.querySelector(`[data-listener-key="${ownerRequest.key}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    setFlashListenerKey(ownerRequest.key);
+    setOwnerRequest(null);
+  }, [filteredListeners, ownerRequest]);
+
+  useEffect(() => {
+    if (!flashListenerKey) return;
+    const timer = window.setTimeout(() => setFlashListenerKey(null), 1_600);
+    return () => window.clearTimeout(timer);
+  }, [flashListenerKey]);
+
+  const copyCommand = async (app: ManagedRow) => {
+    try {
+      await copyText(app.command ?? "");
+      setCopiedAppId(app.id);
+      window.setTimeout(() => {
+        setCopiedAppId((current) => current === app.id ? null : current);
+        setOpenMenu((current) => current === app.id ? null : current);
+      }, 900);
+    } catch (copyError) {
+      setOpenMenu(null);
+      setError(messageOf(copyError));
+    }
+  };
+
+  const openFolder = async (app: ManagedRow) => {
+    setOpenMenu(null);
+    if (!app.cwd) return;
+    try {
+      await revealItemInDir(app.cwd);
+    } catch (folderError) {
+      setError(messageOf(folderError));
+    }
+  };
 
   useEffect(() => {
     if (!openMenu) return;
@@ -1300,6 +1378,14 @@ function App() {
                             <Icon name="play" size={13} />Start
                           </button>
                         )}
+                        {app.identityChanged && app.listener && (
+                          <button
+                            title={`Find PID ${app.listener.pid} in Listening ports`}
+                            onClick={() => showListenerOwner(app.listener!)}
+                          >
+                            <Icon name="arrowDown" size={13} />Show owner
+                          </button>
+                        )}
                         {app.listener && !app.identityChanged && (
                           <button className="icon-button bordered" aria-label={`Open ${app.name} in browser`} title={`Open ${url}`} onClick={() => void openUrl(url)}>
                             <Icon name="arrowUpRight" />
@@ -1327,6 +1413,24 @@ function App() {
                                 }}
                               >
                                 <Icon name="pencil" />Edit
+                              </button>
+                              <button
+                                role="menuitem"
+                                disabled={!app.launchConfigured}
+                                title={app.launchConfigured ? undefined : "No start command configured"}
+                                onClick={() => void copyCommand(app)}
+                              >
+                                {copiedAppId === app.id
+                                  ? <><Icon name="check" />Copied</>
+                                  : <><Icon name="copy" />Copy command</>}
+                              </button>
+                              <button
+                                role="menuitem"
+                                disabled={!app.launchConfigured}
+                                title={app.launchConfigured ? app.cwd : "No working directory configured"}
+                                onClick={() => void openFolder(app)}
+                              >
+                                <Icon name="folder" />Open folder
                               </button>
                               <div className="menu-separator" />
                               <button
@@ -1438,11 +1542,16 @@ function App() {
                   const portLensRuntime = managedRows.some(
                     (app) => Boolean(app.runtime) && app.port === listener.port,
                   );
-                  const conflict = conflictListenerKeys.has(`${listener.port}:${listener.pid}`);
+                  const key = listenerKey(listener);
+                  const rowClass = [
+                    conflictListenerKeys.has(key) && "conflict",
+                    flashListenerKey === key && "flash",
+                  ].filter(Boolean).join(" ");
                   return (
                     <tr
                       key={`${listener.protocol}-${listener.localAddress}-${listener.port}-${listener.pid}`}
-                      className={conflict ? "conflict" : undefined}
+                      className={rowClass || undefined}
+                      data-listener-key={key}
                     >
                       <td><span className={`port-tile small ${presentation.kind === "managed" ? "ok" : "idle"}`}>{listener.port}</span></td>
                       <td className="process-cell" title={listener.commandLine ?? listener.processName}>
