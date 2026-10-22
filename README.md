@@ -33,12 +33,16 @@ The primary runtime target is **Windows 11**. macOS listener discovery is also i
 - **Live port discovery** — enumerate active TCP LISTEN endpoints directly from Windows or macOS.
 - **Friendly app identity** — show a registered app name first; otherwise derive a conservative runtime hint from the process command line while retaining the real executable name and PID.
 - **Managed app controls** — register a trusted command, working directory, and preferred port for one-click Start / Stop / Restart.
+- **Dense app list** — one row per app with a status-colored port tile and the reason behind its state; issues sort first, rows expand for details, and Running / Issues / Stopped filters scale to many registered apps.
+- **Shared search** — one search box (`/` to focus) filters both registered apps and listening ports by name, port, PID, process, or command.
 - **Existing-listener registration** — register an already-running external listener as a persistent monitoring-only App without granting destructive lifecycle ownership.
 - **Verified runtime reattach** — after Port Lens restarts, reconnect only to previously managed runtimes whose saved process identity still matches creation-time and root-ancestry checks.
-- **Conflict visibility** — refuse to start a managed app when another process already owns its port instead of silently killing the blocker.
+- **Conflict visibility** — refuse to start a managed app when another process already owns its port instead of silently killing the blocker; **Show owner** jumps to and highlights that process in Listening ports.
 - **Safe unmanaged termination** — confirm before terminating an unknown listener and re-check the selected PID + port immediately before the kill.
+- **Network exposure hint** — listeners bound to all interfaces (`0.0.0.0`, `::`) carry a `LAN` badge.
 - **Compact bubble** — collapse the dashboard into an always-on-top `running apps / listening ports` monitor, hover to inspect registered apps in a separate compact panel, resize it from 70% to 150%, and restore it with one click.
 - **Language preference** — follow the system language or explicitly choose English / 한국어 while keeping technical control labels in English.
+- **Theme preference** — follow the system light/dark mode or choose Light / Dark; the native title bar follows the same choice.
 - **Native system tray** — reopen the dashboard, show the compact bubble, refresh, or quit without keeping the main window in front.
 - **Portable Windows build** — run the same GUI from a single unsigned EXE without installation.
 - **Responsive dashboard** — use the available desktop width instead of keeping a fixed narrow content column when maximized.
@@ -54,7 +58,10 @@ The primary runtime target is **Windows 11**. macOS listener discovery is also i
 <td width="32%" align="center"><img src=".github/assets/compact-bubble.png" width="300" alt="Port Lens compact bubble"><br><sub>Compact Bubble — running managed apps and total listening ports at a glance</sub></td>
 </tr>
 <tr>
-<td colspan="3" align="center"><img src=".github/assets/settings.png" width="620" alt="Port Lens settings"><br><sub>Settings — System / English / 한국어 and persistent 70%–150% bubble sizing</sub></td>
+<td colspan="3" align="center"><img src=".github/assets/dashboard-dark.png" width="820" alt="Port Lens dashboard in dark theme"><br><sub>Dark theme — an expanded row shows the exit notice, command, folder, listener, and URL</sub></td>
+</tr>
+<tr>
+<td colspan="3" align="center"><img src=".github/assets/settings.png" width="620" alt="Port Lens settings"><br><sub>Settings — System / English / 한국어, System / Light / Dark theme, and persistent 70%–150% bubble sizing</sub></td>
 </tr>
 </table>
 
@@ -104,7 +111,7 @@ This is intentionally more conservative than automatically taking ownership of a
 
 ## Compact Bubble & Tray
 
-The dashboard can collapse into a small always-on-top bubble showing `running managed apps / total managed apps` and the current number of listening ports. Hovering the bubble opens a separate compact panel with the registered app list. Bubble size is configurable from **70% to 150% in 10% steps** and is persisted with the language preference. Expanding restores the previous window size, position, and maximized state.
+The dashboard can collapse into a small always-on-top bubble showing `running managed apps / total managed apps` and the current number of listening ports. Hovering the bubble opens a separate compact panel with the registered app list. Bubble size is configurable from **70% to 150% in 10% steps** and is persisted with the language and theme preferences. Expanding restores the previous window size, position, and maximized state.
 
 Compact mode keeps monitoring active while idle. During an actual drag, polling-result application is briefly deferred and refreshed again when the drag ends so the bubble remains current without reintroducing the earlier sustained drag catch-up behavior.
 
@@ -156,7 +163,7 @@ dev-mock/port-lens.json     # ignored by git
 
 `dev-mock/` is served only when Vite is running in development mode. The frontend will request it only when both `import.meta.env.DEV` and `?mock=1` are true. Normal `tauri dev` without that query and every production build continue to use Tauri IPC and real OS data.
 
-The local screenshot states include `?mock=1` for the dashboard, `?mock=1&screen=app-editor`, `?mock=1&screen=terminate`, `?mock=1&screen=settings&lang=ko`, and `?mock=1&bubble=1&bubbleScale=1.5`. `scripts/capture-webkit.swift` renders those states to PNG without requiring macOS Screen Recording permission.
+The local screenshot states include `?mock=1` for the dashboard, `?mock=1&screen=app-editor`, `?mock=1&screen=terminate`, `?mock=1&screen=settings&lang=ko`, and `?mock=1&bubble=1&bubbleScale=1.5`. `scripts/capture-webkit.swift` renders those states to PNG without requiring macOS Screen Recording permission. The dashboard images show one expanded row, which needs a click before capture, and `dashboard-dark.png` is the same state rendered with a dark color scheme.
 
 The committed `.github/assets/*.png` files are rendered documentation outputs only; the synthetic fixture itself is not committed or packaged.
 
@@ -172,7 +179,7 @@ Rust backend
  ├─ ports.rs            listener discovery + command-line metadata
  ├─ process_control.rs  spawn / stop / terminate process trees
  ├─ registry.rs         persisted Managed App configuration
- ├─ settings.rs         language + compact-mode preferences
+ ├─ settings.rs         language, theme + compact-mode preferences
  ├─ bubble.rs           compact native-window lifecycle
  └─ lib.rs              commands, tray, events, window lifecycle
 ```
@@ -201,7 +208,7 @@ No source code from those projects is copied into Port Lens; they are interactio
 
 ## Current Scope
 
-TCP listeners, Managed Apps, registration of already-running external listeners as monitoring-only Apps, verified runtime reattach, safe process control, friendly app identification, responsive desktop UI, tray residency, configurable compact bubble mode, English/Korean interface preferences, and Windows installer/portable packaging are implemented. UDP discovery and HTTP health checks remain future work. Lifecycle ownership is intentionally limited to Port Lens-started runtimes or runtimes that pass verified reattach checks.
+TCP listeners, Managed Apps, registration of already-running external listeners as monitoring-only Apps, verified runtime reattach, safe process control, friendly app identification, responsive desktop UI, tray residency, configurable compact bubble mode, English/Korean and light/dark interface preferences, and Windows installer/portable packaging are implemented. UDP discovery and HTTP health checks remain future work. Lifecycle ownership is intentionally limited to Port Lens-started runtimes or runtimes that pass verified reattach checks.
 
 Port Lens records its own Start/Stop/Restart requests, results and observed process
 exits in the rotating `port-lens.log`. It does not capture managed App stdout/stderr:

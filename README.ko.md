@@ -32,12 +32,16 @@ Port Lens는 **지금 이 Port를 어떤 process가 사용하고 있고, 그 pro
 - **실시간 Port 탐지** — Windows/macOS에서 TCP LISTEN endpoint를 직접 조회합니다.
 - **Friendly App identity** — 등록 App 이름을 우선 표시하고, 미등록 listener는 command line에서 보수적으로 실행 힌트를 추론합니다. 실제 process 이름과 PID는 그대로 유지합니다.
 - **Managed App 제어** — 신뢰하는 command, working directory, Port를 등록해 Start / Stop / Restart합니다.
+- **밀도 높은 App 목록** — App마다 한 줄로 상태 색 Port 타일과 상태의 이유를 표시합니다. 문제가 있는 App이 먼저 정렬되고, 행을 펼쳐 상세를 보며, Running / Issues / Stopped 필터로 App이 많아도 쉽게 찾을 수 있습니다.
+- **통합 검색** — 하나의 검색창(`/`로 바로 이동)으로 등록 App과 listening Port를 이름, Port, PID, process, command로 함께 걸러냅니다.
 - **기존 listener 등록** — 이미 외부에서 실행 중인 listener를 destructive lifecycle ownership 없이 persistent monitoring-only App으로 등록할 수 있습니다.
 - **검증된 runtime reattach** — Port Lens 재시작 후에도 저장된 process identity가 creation-time 및 root-ancestry 검사를 통과한 기존 Managed Runtime에만 다시 연결합니다.
-- **Port 충돌 표시** — 지정 Port가 이미 사용 중이면 blocker를 임의 종료하지 않고 충돌 상태를 표시합니다.
+- **Port 충돌 표시** — 지정 Port가 이미 사용 중이면 blocker를 임의 종료하지 않고 충돌 상태를 표시합니다. **Show owner**로 Listening ports의 해당 process로 이동해 강조합니다.
 - **안전한 unmanaged 종료** — Kill 전 명시적 확인을 받고, 실제 종료 직전에 PID + Port 소유 관계를 다시 검사합니다.
+- **네트워크 노출 표시** — 모든 interface(`0.0.0.0`, `::`)에 바인딩된 listener에 `LAN` 배지를 표시합니다.
 - **Compact bubble** — `running apps / listening ports`를 always-on-top bubble로 표시하고, hover 시 별도 compact panel에서 등록 App 목록을 확인하며, 70%~150% 크기를 선택할 수 있습니다.
 - **Language 설정** — System / English / 한국어를 지원하며 App, Port, Process 같은 기술 label은 영어로 유지합니다.
+- **Theme 설정** — 운영체제의 라이트/다크 모드를 따르거나 Light / Dark를 직접 선택합니다. 창 제목 표시줄도 같은 테마를 따릅니다.
 - **Native tray** — dashboard 열기, bubble 표시, Refresh, Quit을 system tray에서 수행합니다.
 - **Windows Portable** — 설치 없이 single EXE로 실행할 수 있습니다.
 - **Responsive dashboard** — 창을 최대화하면 고정 폭에 갇히지 않고 사용 가능한 desktop 공간을 활용합니다.
@@ -52,7 +56,10 @@ Port Lens는 **지금 이 Port를 어떤 process가 사용하고 있고, 그 pro
 <td width="32%" align="center"><img src=".github/assets/compact-bubble.png" width="300" alt="Port Lens compact bubble"><br><sub>Compact Bubble — 실행 중인 Managed App과 listening Port를 한눈에 확인</sub></td>
 </tr>
 <tr>
-<td colspan="3" align="center"><img src=".github/assets/settings-ko.png" width="620" alt="Port Lens 한국어 설정"><br><sub>Settings — System / English / 한국어와 70%~150% Bubble size 설정</sub></td>
+<td colspan="3" align="center"><img src=".github/assets/dashboard-dark.png" width="820" alt="Port Lens 다크 테마 dashboard"><br><sub>Dark theme — 펼친 행에서 종료 안내, command, folder, listener, URL 확인</sub></td>
+</tr>
+<tr>
+<td colspan="3" align="center"><img src=".github/assets/settings-ko.png" width="620" alt="Port Lens 한국어 설정"><br><sub>Settings — System / English / 한국어, System / Light / Dark 테마, 70%~150% Bubble size 설정</sub></td>
 </tr>
 </table>
 
@@ -152,7 +159,7 @@ dev-mock/port-lens.json     # gitignore
 
 `dev-mock/`은 Vite development mode에서만 제공되고 frontend도 `import.meta.env.DEV`와 `?mock=1`이 모두 성립할 때만 요청합니다. 일반 `tauri dev`와 production build는 Tauri IPC를 통해 실제 OS data만 사용합니다.
 
-Screenshot state에는 dashboard, App editor, terminate dialog, 한국어 Settings, 다양한 Bubble size가 포함됩니다. `scripts/capture-webkit.swift`를 사용해 macOS Screen Recording 권한 없이 PNG를 생성합니다.
+Screenshot state에는 dashboard, App editor, terminate dialog, 한국어 Settings, 다양한 Bubble size가 포함됩니다. `scripts/capture-webkit.swift`를 사용해 macOS Screen Recording 권한 없이 PNG를 생성합니다. Dashboard 이미지는 행 하나를 펼친 상태라 캡처 전에 클릭이 필요하며, `dashboard-dark.png`는 같은 상태를 다크 color scheme으로 렌더링한 것입니다.
 
 `.github/assets/*.png`에는 문서용 렌더링 결과만 commit하며 synthetic fixture 자체는 commit하거나 package하지 않습니다.
 
@@ -168,7 +175,7 @@ Rust backend
  ├─ ports.rs            listener discovery + command-line metadata
  ├─ process_control.rs  spawn / stop / terminate process trees
  ├─ registry.rs         persisted Managed App configuration
- ├─ settings.rs         language + compact-mode preferences
+ ├─ settings.rs         language, theme + compact-mode preferences
  ├─ bubble.rs           compact native-window lifecycle
  └─ lib.rs              commands, tray, events, window lifecycle
 ```
@@ -196,7 +203,7 @@ Port Lens는 독립 구현이며 다음 프로젝트에서 interaction/architect
 
 ## 현재 범위
 
-TCP listener, Managed App, 이미 외부에서 실행 중인 listener의 monitoring-only App 등록, verified runtime reattach, 안전한 process 제어, friendly App identification, responsive UI, tray, 크기 조절 가능한 Compact Bubble, English/한국어 preference, Windows installer/Portable packaging이 구현되어 있습니다. UDP 탐지와 HTTP health check는 향후 범위입니다. Lifecycle ownership은 Port Lens가 직접 시작했거나 verified reattach 검사를 통과한 runtime에만 부여합니다.
+TCP listener, Managed App, 이미 외부에서 실행 중인 listener의 monitoring-only App 등록, verified runtime reattach, 안전한 process 제어, friendly App identification, responsive UI, tray, 크기 조절 가능한 Compact Bubble, English/한국어 및 라이트/다크 preference, Windows installer/Portable packaging이 구현되어 있습니다. UDP 탐지와 HTTP health check는 향후 범위입니다. Lifecycle ownership은 Port Lens가 직접 시작했거나 verified reattach 검사를 통과한 runtime에만 부여합니다.
 
 Port Lens는 Start/Stop/Restart 요청·결과와 관찰한 프로세스 종료를 회전하는
 `port-lens.log`에 기록합니다. 관리 App의 stdout/stderr는 자동 수집하지 않으며,
